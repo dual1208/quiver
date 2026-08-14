@@ -66,6 +66,10 @@ function isFiniteNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value);
 }
 
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 function isValidHsla(value: unknown): value is Hsla {
   if (!Array.isArray(value) || value.length !== 4) {
     return false;
@@ -368,6 +372,94 @@ export function validateDocument(
           `Edge '${edge.id}' has a non-finite ${property} option`,
           `${occurrence.path}.options.${property}`,
         );
+      }
+    }
+
+    const visualLevel: unknown = edge.options.level;
+    if (
+      visualLevel !== null &&
+      (typeof visualLevel !== "number" ||
+        !Number.isInteger(visualLevel) ||
+        visualLevel < 1 ||
+        visualLevel > MAX_ENTITY_LEVEL)
+    ) {
+      report(
+        occurrence,
+        "invalid-visual-level",
+        `Edge '${edge.id}' has an invalid visual level override`,
+        `${occurrence.path}.options.level`,
+      );
+    }
+
+    const alignment: unknown = edge.options.edgeAlignment;
+    if (!isObjectRecord(alignment)) {
+      report(
+        occurrence,
+        "invalid-edge-alignment",
+        `Edge '${edge.id}' has an invalid endpoint alignment record`,
+        `${occurrence.path}.options.edgeAlignment`,
+      );
+    } else {
+      for (const endpoint of ["source", "target"] as const) {
+        if (typeof alignment[endpoint] !== "boolean") {
+          report(
+            occurrence,
+            "invalid-edge-alignment",
+            `Edge '${edge.id}' has an invalid ${endpoint} endpoint alignment`,
+            `${occurrence.path}.options.edgeAlignment.${endpoint}`,
+          );
+        }
+      }
+    }
+
+    const style: unknown = edge.options.style;
+    if (!isObjectRecord(style)) {
+      report(
+        occurrence,
+        "invalid-edge-style",
+        `Edge '${edge.id}' has an invalid style record`,
+        `${occurrence.path}.options.style`,
+      );
+    } else {
+      if (typeof style.name !== "string") {
+        report(
+          occurrence,
+          "invalid-edge-style",
+          `Edge '${edge.id}' has an invalid outer style name`,
+          `${occurrence.path}.options.style.name`,
+        );
+      }
+      for (const partName of ["tail", "body", "head"] as const) {
+        const part = style[partName];
+        if (!isObjectRecord(part)) {
+          report(
+            occurrence,
+            "invalid-edge-style",
+            `Edge '${edge.id}' has an invalid ${partName} style record`,
+            `${occurrence.path}.options.style.${partName}`,
+          );
+          continue;
+        }
+        if (typeof part.name !== "string") {
+          report(
+            occurrence,
+            "invalid-edge-style",
+            `Edge '${edge.id}' has an invalid ${partName} style name`,
+            `${occurrence.path}.options.style.${partName}.name`,
+          );
+        }
+        if (
+          Object.hasOwn(part, "side") &&
+          part.side !== "top" &&
+          part.side !== "bottom"
+        ) {
+          report(
+            occurrence,
+            "invalid-edge-style",
+            `Edge '${edge.id}' has an invalid ${partName} style side`,
+            `${occurrence.path}.options.style.${partName}.side`,
+          );
+        }
       }
     }
 

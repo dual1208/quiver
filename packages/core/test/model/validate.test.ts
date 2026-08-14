@@ -64,12 +64,15 @@ describe("canonical model values", () => {
       labelPosition: 50,
       offset: 0,
       curve: 0,
-      radius: 0,
+      radius: 3,
       angle: 0,
       shorten: { source: 0, target: 0 },
+      level: null,
       colour: [0, 0, 0, 1],
       shape: "bezier",
+      edgeAlignment: { source: true, target: true },
       style: {
+        name: "arrow",
         tail: { name: "none" },
         body: { name: "cell" },
         head: { name: "arrowhead" },
@@ -100,6 +103,88 @@ describe("validateDocument", () => {
   it("derives public entity levels from endpoint dependencies", () => {
     expect(entityLevel(valid, source.id)).toBe(0);
     expect(entityLevel(valid, arrow.id)).toBe(1);
+  });
+
+  it("keeps a bounded visual level override separate from structural level", () => {
+    const visualOverride: Edge = {
+      ...arrow,
+      options: { ...arrow.options, level: 3 },
+    };
+    const document = { ...valid, edges: [visualOverride] };
+
+    expect(validateDocument(document)).toEqual([]);
+    expect(entityLevel(document, visualOverride.id)).toBe(1);
+
+    for (const level of [0, 5, 1.5, Number.NaN]) {
+      const diagnostics = validateDocument({
+        ...valid,
+        edges: [
+          {
+            ...visualOverride,
+            options: { ...visualOverride.options, level },
+          },
+        ],
+      });
+
+      expect(diagnostics).toContainEqual(
+        expect.objectContaining({
+          code: "invalid-visual-level",
+          path: "edges[0].options.level",
+        }),
+      );
+    }
+  });
+
+  it("validates endpoint alignment and nested style records", () => {
+    for (const name of ["arrow", "adjunction", "corner", "corner-inverse"]) {
+      expect(
+        validateDocument({
+          ...valid,
+          edges: [
+            {
+              ...arrow,
+              options: {
+                ...arrow.options,
+                style: { ...arrow.options.style, name },
+              },
+            },
+          ],
+        }),
+      ).toEqual([]);
+    }
+
+    const invalidAlignment = {
+      ...arrow,
+      options: {
+        ...arrow.options,
+        edgeAlignment: { source: "yes", target: true },
+      },
+    } as unknown as Edge;
+    const invalidStyle = {
+      ...arrow,
+      id: entityId("e-invalid-style"),
+      options: {
+        ...arrow.options,
+        style: {
+          name: 7,
+          tail: { name: "hook", side: "left" },
+          body: { name: false },
+          head: null,
+        },
+      },
+    } as unknown as Edge;
+    const diagnostics = validateDocument({
+      ...valid,
+      edges: [invalidAlignment, invalidStyle],
+    });
+
+    expect(diagnostics.map(({ code, path }) => [code, path])).toEqual([
+      ["invalid-edge-alignment", "edges[0].options.edgeAlignment.source"],
+      ["invalid-edge-style", "edges[1].options.style.name"],
+      ["invalid-edge-style", "edges[1].options.style.tail.side"],
+      ["invalid-edge-style", "edges[1].options.style.body.name"],
+      ["invalid-edge-style", "edges[1].options.style.head"],
+    ]);
   });
 
   it("reports the later vertex at an occupied grid position", () => {

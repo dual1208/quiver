@@ -20,7 +20,22 @@ export {
   entityLevel,
   validateDocument,
 } from "./model/validate";
+export {
+  decodeQuiverPayload,
+  encodeQuiverPayload,
+  encodeQuiverSelection,
+  formatQuiverUrl,
+  parseQuiverUrl,
+} from "./codec/quiver";
 export type { IdFactory } from "./model/ids";
+export type {
+  DecodeQuiverOptions,
+  DecodeResult,
+  EncodedQuiverSelection,
+  FormatQuiverUrlOptions,
+  QuiverDiagnostic,
+  QuiverLink,
+} from "./codec/quiver";
 export type { HistoryEntry, HistoryState } from "./commands/history";
 export type {
   CommandErrorCode,

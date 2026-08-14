@@ -72,12 +72,15 @@ function writableEdge(id: string, sourceId: EntityId, targetId: EntityId) {
       labelPosition: 50,
       offset: 0,
       curve: 0,
-      radius: 0,
+      radius: 3,
       angle: 0,
       shorten: { source: 0, target: 0 },
+      level: 2,
       colour,
       shape: "bezier" as const,
+      edgeAlignment: { source: false, target: true },
       style: {
+        name: "arrow",
         tail: { name: "none" },
         body: { name: "solid" },
         head: { name: "arrowhead", side: "top" as const },
@@ -490,6 +493,9 @@ describe("document commands", () => {
     const changed = applyCommand(source, command);
     const expected = structuredClone(changed);
 
+    expect(changed.edges[0]?.options).toEqual(arrow.options);
+    expect(changed.edges[0]?.options).not.toBe(arrow.options);
+
     sourceVertex.label = "mutated source";
     sourceVertex.labelColour[0] = 180;
     source.vertices.push(writableVertex("v-late", 2, 0));
@@ -497,7 +503,10 @@ describe("document commands", () => {
     added.labelColour[1] = 50;
     arrow.label = "mutated edge";
     arrow.options.shorten.source = 12;
+    arrow.options.level = 4;
     arrow.options.colour[2] = 30;
+    arrow.options.edgeAlignment.source = true;
+    arrow.options.style.name = "corner";
     arrow.options.style.head.name = "mutated head";
     command.vertices.length = 0;
     command.edges.length = 0;
@@ -775,6 +784,9 @@ describe("bounded history", () => {
     const history = createHistory(source);
     const expected = structuredClone(history);
 
+    expect(history.document.edges[0]?.options).toEqual(arrow.options);
+    expect(history.document.edges[0]?.options).not.toBe(arrow.options);
+
     source.title = "mutated title";
     source.vertices.length = 0;
     first.label = "mutated first";
@@ -782,7 +794,10 @@ describe("bounded history", () => {
     arrow.label = "mutated arrow";
     arrow.labelColour[1] = 40;
     arrow.options.shorten.target = 10;
+    arrow.options.level = 4;
     arrow.options.colour[2] = 25;
+    arrow.options.edgeAlignment.target = false;
+    arrow.options.style.name = "corner-inverse";
     arrow.options.style.tail.name = "mutated tail";
 
     expect(source.title).toBe("mutated title");

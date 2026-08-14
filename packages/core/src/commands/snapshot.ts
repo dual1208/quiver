@@ -36,9 +36,15 @@ function snapshotEdgeOptions(options: EdgeOptions): EdgeOptions {
       source: options.shorten.source,
       target: options.shorten.target,
     },
+    level: options.level,
     colour: snapshotHsla(options.colour),
     shape: options.shape,
+    edgeAlignment: {
+      source: options.edgeAlignment.source,
+      target: options.edgeAlignment.target,
+    },
     style: {
+      name: options.style.name,
       tail: snapshotEdgeStylePart(options.style.tail),
       body: snapshotEdgeStylePart(options.style.body),
       head: snapshotEdgeStylePart(options.style.head),

@@ -30,9 +30,12 @@ export interface EdgeOptions {
   readonly radius: number;
   readonly angle: number;
   readonly shorten: Readonly<{ source: number; target: number }>;
+  readonly level: number | null;
   readonly colour: Hsla;
   readonly shape: ArrowShape;
+  readonly edgeAlignment: Readonly<{ source: boolean; target: boolean }>;
   readonly style: Readonly<{
+    readonly name: string;
     tail: EdgeStylePart;
     body: EdgeStylePart;
     head: EdgeStylePart;

@@ -156,16 +156,31 @@ def parse_devicectl_json(payload: Any) -> tuple[Device, ...]:
 
 
 def parse_adb_devices(text: str) -> tuple[Device, ...]:
+    header = "List of devices attached"
+    lines = [line.strip() for line in text.splitlines()]
+    try:
+        first_device_line = lines.index(header) + 1
+    except ValueError as exc:
+        raise InventoryParseError(f"ADB output is missing the expected header: {header}") from exc
+
     devices: list[Device] = []
     seen: set[str] = set()
-    for line in text.splitlines():
-        stripped = line.strip()
-        if not stripped or stripped == "List of devices attached":
+    states = {
+        "device": DeviceState.CONNECTED,
+        "unauthorized": DeviceState.UNAUTHORIZED,
+        "offline": DeviceState.OFFLINE,
+    }
+    for stripped in lines[first_device_line:]:
+        if not stripped:
             continue
         fields = stripped.split()
         if len(fields) < 2:
             raise InventoryParseError(f"malformed ADB device line for serial: {fields[0]}")
         identifier, raw_state = fields[:2]
+        if raw_state not in states:
+            raise InventoryParseError(
+                f"malformed ADB device state for serial {identifier}: {raw_state}"
+            )
         if identifier in seen:
             raise InventoryParseError(f"duplicate ADB serial: {identifier}")
         seen.add(identifier)
@@ -174,17 +189,12 @@ def parse_adb_devices(text: str) -> tuple[Device, ...]:
             if ":" in token:
                 key, value = token.split(":", 1)
                 properties[key] = value
-        state = {
-            "device": DeviceState.CONNECTED,
-            "unauthorized": DeviceState.UNAUTHORIZED,
-            "offline": DeviceState.OFFLINE,
-        }.get(raw_state, DeviceState.OFFLINE)
         devices.append(
             Device(
                 identifier=identifier,
                 platform=Platform.ANDROID,
                 model=properties.get("model"),
-                state=state,
+                state=states[raw_state],
             )
         )
     return tuple(devices)

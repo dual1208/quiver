@@ -214,6 +214,35 @@ def test_parse_devicectl_uses_top_level_identifier_and_connection_state() -> Non
     assert devices[1].services_available is False
 
 
+def test_unpaired_coredevice_is_offline_and_fails_strict_matching(tmp_path: Path) -> None:
+    config, inventory = _api()
+    path = tmp_path / "devices.json"
+    _write_config(path, [_configured_devices()[1]])
+    configured = config.load_lab_config(path)
+    discovered = inventory.parse_devicectl_json(
+        _core_payload(
+            [
+                _core_device(
+                    "CAB0ED1D-913E-5EB9-8737-5E6D3888907F",
+                    "iPhone 15",
+                    pairing="unpaired",
+                    tunnel="disconnected",
+                    services=False,
+                )
+            ]
+        )
+    )
+
+    report = inventory.match_inventory(configured, discovered)
+
+    assert discovered[0].state.value == "offline"
+    assert discovered[0].services_available is False
+    assert report.strict_ok is False
+    assert [(row.available, row.reason) for row in report.devices] == [
+        (False, "offline")
+    ]
+
+
 @pytest.mark.parametrize(
     ("payload", "message"),
     [
@@ -249,6 +278,37 @@ offline-id offline model:IGNORED
         ("unauthorized-id", "unauthorized", None),
         ("offline-id", "offline", "IGNORED"),
     ]
+
+
+def test_parse_adb_devices_ignores_cold_daemon_preamble_before_header() -> None:
+    _, inventory = _api()
+    text = """* daemon not running; starting now at tcp:5037
+* daemon started successfully *
+List of devices attached
+4de5967c device usb:ignored model:OPD2415 transport_id:1
+ee6c6a88 device model:ONEPLUS_A6000
+"""
+
+    devices = inventory.parse_adb_devices(text)
+
+    assert [(device.identifier, device.state.value, device.model) for device in devices] == [
+        ("4de5967c", "connected", "OPD2415"),
+        ("ee6c6a88", "connected", "ONEPLUS_A6000"),
+    ]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "4de5967c device model:OPD2415\n",
+        "List of devices attached\nmalformed-row\n",
+    ],
+)
+def test_parse_adb_devices_rejects_output_without_valid_device_rows(text: str) -> None:
+    _, inventory = _api()
+
+    with pytest.raises(inventory.InventoryParseError, match="ADB"):
+        inventory.parse_adb_devices(text)
 
 
 def test_parse_adb_devices_rejects_duplicate_serial() -> None:

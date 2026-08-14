@@ -13,6 +13,7 @@ from typing import Any, Self
 
 
 DEFAULT_LOCK_PATH = Path("/Users/xie/Library/Caches/quiver-native/lab.lock")
+MAX_RUN_DIRECTORY_ATTEMPTS = 1_000
 
 
 class ManifestStage(StrEnum):
@@ -45,9 +46,20 @@ class RunArtifacts:
             raise ValueError("artifact timestamp must be timezone-aware")
         timestamp = timestamp.astimezone(UTC)
         root.mkdir(parents=True, exist_ok=True, mode=0o700)
-        run_name = f"{timestamp:%Y%m%dT%H%M%SZ}-{commit_sha[:8].lower()}"
-        run_dir = root / run_name
-        run_dir.mkdir(mode=0o700)
+        base_name = f"{timestamp:%Y%m%dT%H%M%SZ}-{commit_sha[:8].lower()}"
+        for attempt in range(1, MAX_RUN_DIRECTORY_ATTEMPTS + 1):
+            run_name = base_name if attempt == 1 else f"{base_name}-{attempt}"
+            run_dir = root / run_name
+            try:
+                run_dir.mkdir(mode=0o700)
+            except FileExistsError:
+                continue
+            break
+        else:
+            raise FileExistsError(
+                f"unable to allocate a unique artifact directory after "
+                f"{MAX_RUN_DIRECTORY_ATTEMPTS} attempts: {base_name}"
+            )
         (run_dir / "logs").mkdir(mode=0o700)
         return cls(run_dir=run_dir, manifest_path=run_dir / "manifest.json")
 

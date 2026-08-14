@@ -4,6 +4,7 @@ import importlib
 import json
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -32,6 +33,64 @@ def test_run_artifacts_use_utc_timestamp_and_short_commit(tmp_path: Path) -> Non
     assert run.manifest_path == run.run_dir / "manifest.json"
     assert run.log_path("inventory") == run.run_dir / "logs" / "inventory.log"
     assert run.log_path("inventory").parent.is_dir()
+
+
+def test_run_artifacts_suffix_same_timestamp_without_overwriting_evidence(
+    tmp_path: Path,
+) -> None:
+    artifacts = _api()
+    root = tmp_path / "artifacts"
+    timestamp = datetime(2026, 8, 14, 5, 54, 59, tzinfo=UTC)
+    first = artifacts.RunArtifacts.create(
+        root=root,
+        commit_sha="abcdef1234567890",
+        now=timestamp,
+    )
+    first.write_manifest(
+        stage=artifacts.ManifestStage.INVENTORY,
+        data={"evidence": "first"},
+    )
+
+    second = artifacts.RunArtifacts.create(
+        root=root,
+        commit_sha="abcdef1234567890",
+        now=timestamp,
+    )
+
+    assert first.run_dir.name == "20260814T055459Z-abcdef12"
+    assert second.run_dir.name == "20260814T055459Z-abcdef12-2"
+    assert json.loads(first.manifest_path.read_text(encoding="utf-8"))["evidence"] == "first"
+    assert second.manifest_path.exists() is False
+
+
+def test_run_artifacts_allocate_suffixes_with_concurrent_exclusive_mkdir(
+    tmp_path: Path,
+) -> None:
+    artifacts = _api()
+    root = tmp_path / "artifacts"
+    timestamp = datetime(2026, 8, 14, 5, 54, 59, tzinfo=UTC)
+
+    def create() -> str:
+        run = artifacts.RunArtifacts.create(
+            root=root,
+            commit_sha="abcdef1234567890",
+            now=timestamp,
+        )
+        return run.run_dir.name
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        names = set(executor.map(lambda _: create(), range(8)))
+
+    assert names == {
+        "20260814T055459Z-abcdef12",
+        "20260814T055459Z-abcdef12-2",
+        "20260814T055459Z-abcdef12-3",
+        "20260814T055459Z-abcdef12-4",
+        "20260814T055459Z-abcdef12-5",
+        "20260814T055459Z-abcdef12-6",
+        "20260814T055459Z-abcdef12-7",
+        "20260814T055459Z-abcdef12-8",
+    }
 
 
 def test_log_path_rejects_directory_escape(tmp_path: Path) -> None:

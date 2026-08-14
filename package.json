@@ -13,7 +13,9 @@
   "packageManager": "npm@11.16.0",
   "scripts": {
     "fmt": "prettier --check --ignore-unknown package.json tsconfig.base.json vitest.workspace.ts apps packages test",
-    "lint": "eslint apps packages test --ext .js,.ts,.tsx --report-unused-disable-directives --max-warnings 0",
+    "lint": "npm-run-all lint:*",
+    "lint:mobile": "npm run lint -w @quiver/mobile",
+    "lint:root": "eslint packages test --ext .js,.ts,.tsx --report-unused-disable-directives --max-warnings 0",
     "typecheck": "npm-run-all typecheck:*",
     "typecheck:core": "tsc -b packages/core",
     "typecheck:mobile": "npm run typecheck -w @quiver/mobile",

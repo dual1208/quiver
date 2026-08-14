@@ -7,6 +7,7 @@
     "start": "expo start",
     "android": "expo run:android",
     "ios": "expo run:ios",
+    "lint": "eslint . --ext .js,.ts,.tsx --report-unused-disable-directives --max-warnings 0",
     "test": "jest",
     "typecheck": "tsc --noEmit",
     "prebuild": "expo prebuild"

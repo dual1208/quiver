@@ -16,6 +16,7 @@ import type {
   GridPoint,
   Hsla,
   LabelAlignment,
+  ValidationDiagnostic,
   Vertex,
 } from "../model/types";
 import {
@@ -68,11 +69,13 @@ export interface EncodedQuiverSelection {
 export interface QuiverLink {
   readonly payload: string | null;
   readonly renderer: "katex" | "typst";
+  readonly macros: string | null;
   readonly macroUrl: string | null;
 }
 
 export interface FormatQuiverUrlOptions {
   readonly renderer?: "katex" | "typst";
+  readonly macros?: string | null;
   readonly macroUrl?: string | null;
 }
 
@@ -909,6 +912,209 @@ function wireColour(colour: Hsla): readonly number[] {
     : [colour[0], colour[1], colour[2], colour[3]];
 }
 
+function encodingDiagnostic(
+  code: string,
+  message: string,
+  entityId: EntityId,
+  path: string,
+): ValidationDiagnostic {
+  return Object.freeze({ code, message, entityId, path });
+}
+
+function isWireColour(colour: Hsla): boolean {
+  return (
+    Number.isSafeInteger(colour[0]) &&
+    colour[0] >= 0 &&
+    colour[0] <= 360 &&
+    Number.isSafeInteger(colour[1]) &&
+    colour[1] >= 0 &&
+    colour[1] <= 100 &&
+    Number.isSafeInteger(colour[2]) &&
+    colour[2] >= 0 &&
+    colour[2] <= 100 &&
+    Number.isFinite(colour[3]) &&
+    colour[3] >= 0 &&
+    colour[3] <= 1
+  );
+}
+
+function legacyLengthForShorten(
+  shorten: Readonly<{ source: number; target: number }>,
+): number | null {
+  if (
+    shorten.source !== shorten.target ||
+    shorten.source < 0 ||
+    !Number.isFinite(shorten.source)
+  ) {
+    return null;
+  }
+  const length = 100 - shorten.source - shorten.target;
+  return Number.isSafeInteger(length) && length >= 0 && length <= 100
+    ? length
+    : null;
+}
+
+function isExplicitWireShorten(
+  shorten: Readonly<{ source: number; target: number }>,
+): boolean {
+  return (
+    Number.isSafeInteger(shorten.source) &&
+    shorten.source >= 0 &&
+    Number.isSafeInteger(shorten.target) &&
+    shorten.target >= 0 &&
+    shorten.source + shorten.target <= 100
+  );
+}
+
+function assertQuiverEncodable(
+  document: DiagramDocument,
+  vertices: readonly Vertex[],
+  edges: readonly Edge[],
+  minimumX: number,
+  minimumY: number,
+): void {
+  const diagnostics: ValidationDiagnostic[] = [];
+  const vertexIndexById = new Map(
+    document.vertices.map(({ id }, index) => [id, index] as const),
+  );
+  const edgeIndexById = new Map(
+    document.edges.map(({ id }, index) => [id, index] as const),
+  );
+
+  for (const vertex of vertices) {
+    const vertexIndex = vertexIndexById.get(vertex.id)!;
+    for (const [property, normalized] of [
+      ["x", vertex.x - minimumX],
+      ["y", vertex.y - minimumY],
+    ] as const) {
+      if (!Number.isSafeInteger(normalized) || normalized < 0) {
+        diagnostics.push(
+          encodingDiagnostic(
+            "quiver-wire-coordinate",
+            `Vertex '${vertex.id}' has a coordinate outside the Quiver v0 wire domain`,
+            vertex.id,
+            `vertices[${vertexIndex}].${property}`,
+          ),
+        );
+      }
+    }
+    if (!isWireColour(vertex.labelColour)) {
+      diagnostics.push(
+        encodingDiagnostic(
+          "quiver-wire-colour",
+          `Vertex '${vertex.id}' has a label colour outside the Quiver v0 wire domain`,
+          vertex.id,
+          `vertices[${vertexIndex}].labelColour`,
+        ),
+      );
+    }
+  }
+
+  for (const edge of edges) {
+    const edgeIndex = edgeIndexById.get(edge.id)!;
+    const optionPath = `edges[${edgeIndex}].options`;
+    const requiredShape = edge.sourceId === edge.targetId ? "arc" : "bezier";
+    if (edge.options.shape !== requiredShape) {
+      diagnostics.push(
+        encodingDiagnostic(
+          "quiver-shape-mismatch",
+          `Edge '${edge.id}' must use ${requiredShape} shape for its endpoints`,
+          edge.id,
+          `${optionPath}.shape`,
+        ),
+      );
+    }
+    const boundedNumbers = [
+      ["labelPosition", edge.options.labelPosition, 0, 100],
+      [
+        "offset",
+        edge.options.offset,
+        Number.MIN_SAFE_INTEGER,
+        Number.MAX_SAFE_INTEGER,
+      ],
+      [
+        "curve",
+        edge.options.curve,
+        Number.MIN_SAFE_INTEGER,
+        Number.MAX_SAFE_INTEGER,
+      ],
+      [
+        "radius",
+        edge.options.radius,
+        Number.MIN_SAFE_INTEGER,
+        Number.MAX_SAFE_INTEGER,
+      ],
+      [
+        "angle",
+        edge.options.angle,
+        Number.MIN_SAFE_INTEGER,
+        Number.MAX_SAFE_INTEGER,
+      ],
+    ] as const;
+    for (const [property, value, minimum, maximum] of boundedNumbers) {
+      if (!Number.isSafeInteger(value) || value < minimum || value > maximum) {
+        diagnostics.push(
+          encodingDiagnostic(
+            "quiver-wire-number",
+            `Edge '${edge.id}' has a ${property} value outside the Quiver v0 wire domain`,
+            edge.id,
+            `${optionPath}.${property}`,
+          ),
+        );
+      }
+    }
+
+    const { shorten } = edge.options;
+    if (
+      !isExplicitWireShorten(shorten) &&
+      legacyLengthForShorten(shorten) === null
+    ) {
+      let path = `${optionPath}.shorten`;
+      if (
+        shorten.source < 0 ||
+        (Number.isInteger(shorten.source) &&
+          !Number.isSafeInteger(shorten.source))
+      ) {
+        path = `${optionPath}.shorten.source`;
+      } else if (
+        shorten.target < 0 ||
+        (Number.isInteger(shorten.target) &&
+          !Number.isSafeInteger(shorten.target))
+      ) {
+        path = `${optionPath}.shorten.target`;
+      }
+      diagnostics.push(
+        encodingDiagnostic(
+          "quiver-wire-shorten",
+          `Edge '${edge.id}' has shortening outside the Quiver v0 wire domain`,
+          edge.id,
+          path,
+        ),
+      );
+    }
+
+    for (const [colour, path, description] of [
+      [edge.labelColour, `edges[${edgeIndex}].labelColour`, "label"],
+      [edge.options.colour, `${optionPath}.colour`, "arrow"],
+    ] as const) {
+      if (!isWireColour(colour)) {
+        diagnostics.push(
+          encodingDiagnostic(
+            "quiver-wire-colour",
+            `Edge '${edge.id}' has a ${description} colour outside the Quiver v0 wire domain`,
+            edge.id,
+            path,
+          ),
+        );
+      }
+    }
+  }
+
+  if (diagnostics.length > 0) {
+    throw new DocumentValidationError(diagnostics);
+  }
+}
+
 function deriveLevels(
   document: DiagramDocument,
 ): ReadonlyMap<EntityId, number> {
@@ -981,15 +1187,22 @@ function edgeOptionDelta(edge: Edge, structuralLevel: number): UnknownRecord {
     delta.angle = options.angle;
   }
 
-  const shorten: UnknownRecord = {};
-  if (options.shorten.source !== DEFAULT_EDGE_OPTIONS.shorten.source) {
-    shorten.source = options.shorten.source;
-  }
-  if (options.shorten.target !== DEFAULT_EDGE_OPTIONS.shorten.target) {
-    shorten.target = options.shorten.target;
-  }
-  if (Object.keys(shorten).length > 0) {
-    delta.shorten = shorten;
+  if (isExplicitWireShorten(options.shorten)) {
+    const shorten: UnknownRecord = {};
+    if (options.shorten.source !== DEFAULT_EDGE_OPTIONS.shorten.source) {
+      shorten.source = options.shorten.source;
+    }
+    if (options.shorten.target !== DEFAULT_EDGE_OPTIONS.shorten.target) {
+      shorten.target = options.shorten.target;
+    }
+    if (Object.keys(shorten).length > 0) {
+      delta.shorten = shorten;
+    }
+  } else {
+    const length = legacyLengthForShorten(options.shorten);
+    if (length !== null) {
+      delta.length = length;
+    }
   }
 
   const visualLevel = options.level ?? structuralLevel;
@@ -1053,9 +1266,6 @@ function encodeIncluded(
   included: ReadonlySet<EntityId>,
   selected: ReadonlySet<EntityId>,
 ): EncodedQuiverSelection {
-  if (included.size === 0) {
-    return { payload: "", selectedWireIndices: Object.freeze([]) };
-  }
   const levels = deriveLevels(document);
   const [vertices, edges] = orderedSelection(document, included, levels);
   let minimumX = Number.POSITIVE_INFINITY;
@@ -1064,6 +1274,7 @@ function encodeIncluded(
     minimumX = Math.min(minimumX, vertex.x);
     minimumY = Math.min(minimumY, vertex.y);
   }
+  assertQuiverEncodable(document, vertices, edges, minimumX, minimumY);
 
   const cells: unknown[][] = [];
   const wireIndexById = new Map<EntityId, number>();
@@ -1219,6 +1430,7 @@ export function parseQuiverUrl(text: string): QuiverLink {
   return {
     payload: parameters.get("q") ?? null,
     renderer,
+    macros: parameters.get("macros") ?? null,
     macroUrl: parameters.get("macro_url") ?? null,
   };
 }
@@ -1237,7 +1449,15 @@ export function formatQuiverUrl(
     parameters.push("r=typst");
   }
   parameters.push(`q=${encodeQuiverPayload(document)}`);
-  if (options.macroUrl !== undefined && options.macroUrl !== null) {
+  const macros =
+    options.macros === undefined ? document.macros : options.macros;
+  if (macros !== null && macros.trim() !== "") {
+    parameters.push(`macros=${encodeURIComponent(macros)}`);
+  } else if (
+    options.macroUrl !== undefined &&
+    options.macroUrl !== null &&
+    options.macroUrl.trim() !== ""
+  ) {
     parameters.push(`macro_url=${encodeURIComponent(options.macroUrl)}`);
   }
   return `${CANONICAL_URL}#${parameters.join("&")}`;

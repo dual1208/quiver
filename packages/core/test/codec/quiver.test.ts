@@ -7,6 +7,7 @@ import {
   BLACK_HSLA,
   CORE_SCHEMA_VERSION,
   DEFAULT_EDGE_OPTIONS,
+  DocumentValidationError,
   createDeterministicIdFactory,
   decodeQuiverPayload,
   encodeQuiverPayload,
@@ -190,6 +191,18 @@ describe("published Quiver v0 fixtures", () => {
 });
 
 describe("byte-safe base64 and URL compatibility", () => {
+  it("matches the React Native TextEncoder and fatal TextDecoder runtime contract", () => {
+    expect(typeof TextEncoder).toBe("function");
+    expect(typeof TextDecoder).toBe("function");
+    const bytes = new TextEncoder().encode("日本語 😀");
+    expect(new TextDecoder("utf-8", { fatal: true }).decode(bytes)).toBe(
+      "日本語 😀",
+    );
+    expect(() =>
+      new TextDecoder("utf-8", { fatal: true }).decode(Uint8Array.from([0xff])),
+    ).toThrow();
+  });
+
   it("round-trips TeX slashes, emoji, and Japanese through fatal UTF-8", () => {
     const source = document([
       vertex("v-tex", 0, 0, "\\alpha"),
@@ -262,20 +275,74 @@ describe("byte-safe base64 and URL compatibility", () => {
   it("lets raw query parameters override fragment parameters", () => {
     expect(
       parseQuiverUrl(
-        "https://q.uiver.app/?q=query&r=typst#q=fragment&r=katex&macro_url=https%3A%2F%2Fexample.com%2Fm%3Fa%3D1%26b%3D2",
+        "https://q.uiver.app/?q=query&r=typst&macros=%5Cnewcommand%7B%5Cfoo%7D%7BA+B%7D#q=fragment&r=katex&macros=fragment&macro_url=https%3A%2F%2Fexample.com%2Fm%3Fa%3D1%26b%3D2",
       ),
     ).toEqual({
       payload: "query",
       renderer: "typst",
+      macros: "\\newcommand{\\foo}{A+B}",
       macroUrl: "https://example.com/m?a=1&b=2",
     });
   });
 
+  it("prefers and preserves inline macros when formatting current Quiver links", () => {
+    const inlineMacros = "  \\newcommand{\\foo}{A+B}  ";
+    const source = {
+      ...document([vertex("v-inline-macro", 0, 0, "\\foo")]),
+      macros: inlineMacros,
+    };
+    const payload = encodeQuiverPayload(source);
+
+    const formatted = formatQuiverUrl(source, {
+      macroUrl: "https://example.com/fallback.tex",
+    });
+
+    expect(formatted).toBe(
+      `https://q.uiver.app/#q=${payload}&macros=${encodeURIComponent(inlineMacros)}`,
+    );
+    expect(formatted).not.toContain("macro_url=");
+    expect(parseQuiverUrl(formatted)).toEqual({
+      payload,
+      renderer: "katex",
+      macros: inlineMacros,
+      macroUrl: null,
+    });
+  });
+
+  it("uses explicit macro options and omits blank macro sources", () => {
+    const source = {
+      ...document([vertex("v-explicit-macro", 0, 0, "A")]),
+      macros: "\\newcommand{\\documentMacro}{D}",
+    };
+    const payload = encodeQuiverPayload(source);
+
+    expect(
+      formatQuiverUrl(source, {
+        macros: "\\newcommand{\\optionMacro}{O}",
+        macroUrl: "https://example.com/fallback.tex",
+      }),
+    ).toBe(
+      `https://q.uiver.app/#q=${payload}&macros=%5Cnewcommand%7B%5CoptionMacro%7D%7BO%7D`,
+    );
+    expect(
+      formatQuiverUrl(source, {
+        macros: null,
+        macroUrl: " https://example.com/macros.tex ",
+      }),
+    ).toBe(
+      `https://q.uiver.app/#q=${payload}&macro_url=%20https%3A%2F%2Fexample.com%2Fmacros.tex%20`,
+    );
+    expect(
+      formatQuiverUrl(source, { macros: " \n\t ", macroUrl: " \t " }),
+    ).toBe(`https://q.uiver.app/#q=${payload}`);
+  });
+
   it("formats canonical URLs and preserves renderer and macro metadata", () => {
-    const empty = document([]);
+    const empty = { ...document([]), macros: "document macros" };
     expect(
       formatQuiverUrl(empty, {
         renderer: "typst",
+        macros: "option macros",
         macroUrl: "https://example.com/macros?a=1&b=2",
       }),
     ).toBe("https://q.uiver.app/");
@@ -291,6 +358,7 @@ describe("byte-safe base64 and URL compatibility", () => {
     expect(parseQuiverUrl(formatted)).toEqual({
       payload,
       renderer: "typst",
+      macros: null,
       macroUrl: "https://example.com/macros?a=1&b=2",
     });
 
@@ -329,6 +397,33 @@ describe("legacy options and exact v0 defaults", () => {
     expect(decoded.document.edges[1]?.options.shorten).toEqual({
       source: 10,
       target: 20,
+    });
+  });
+
+  it("re-encodes odd legacy lengths without invalid fractional shortening", () => {
+    const decoded = decodeSuccess(
+      payloadFor([0, 2, [0, 0], [1, 0], [0, 1, "odd", 0, { length: 99 }]]),
+      "odd-length-first",
+    );
+    expect(decoded.document.edges[0]?.options.shorten).toEqual({
+      source: 0.5,
+      target: 0.5,
+    });
+
+    const reencoded = encodeQuiverPayload(decoded.document);
+
+    expect(wireValue(reencoded)).toEqual([
+      0,
+      2,
+      [0, 0],
+      [1, 0],
+      [0, 1, "odd", 0, { length: 99 }],
+    ]);
+    const roundTripped = decodeSuccess(reencoded, "odd-length-second");
+    expect(roundTripped.diagnostics).toEqual([]);
+    expect(roundTripped.document.edges[0]?.options.shorten).toEqual({
+      source: 0.5,
+      target: 0.5,
     });
   });
 
@@ -669,6 +764,237 @@ describe("canonical encoding and selections", () => {
   });
 });
 
+describe("Quiver encoder wire domain", () => {
+  function sourceWithOptions(options: EdgeOptions): DiagramDocument {
+    const first = vertex("v-domain-first", 0, 0, "A", [360, 100, 100, 1]);
+    const second = vertex("v-domain-second", 1, 0, "B", [0, 0, 0, 0.25]);
+    return document(
+      [first, second],
+      [
+        edge(
+          "e-domain",
+          first.id,
+          second.id,
+          "f",
+          options,
+          [360, 0, 100, 0.75],
+        ),
+      ],
+    );
+  }
+
+  it("emits a decodable v0 payload for an empty document and selection", () => {
+    const source = document([]);
+
+    const payload = encodeQuiverPayload(source);
+    const selection = encodeQuiverSelection(source, []);
+
+    expect(wireValue(payload)).toEqual([0, 0]);
+    expect(selection).toEqual({
+      payload,
+      selectedWireIndices: [],
+    });
+    const decoded = decodeSuccess(payload, "empty-wire");
+    expect(decoded.diagnostics).toEqual([]);
+    expect(decoded.document.vertices).toEqual([]);
+    expect(decoded.document.edges).toEqual([]);
+  });
+
+  it("accepts inclusive v0 boundaries and always emits a cleanly decodable payload", () => {
+    const sources = [
+      sourceWithOptions({
+        ...DEFAULT_EDGE_OPTIONS,
+        labelPosition: 0,
+        offset: Number.MIN_SAFE_INTEGER,
+        curve: Number.MAX_SAFE_INTEGER,
+        radius: Number.MIN_SAFE_INTEGER,
+        angle: Number.MAX_SAFE_INTEGER,
+        shorten: { source: 0, target: 100 },
+        colour: [0, 100, 0, 0.5],
+      }),
+      sourceWithOptions({
+        ...DEFAULT_EDGE_OPTIONS,
+        labelPosition: 100,
+        offset: Number.MAX_SAFE_INTEGER,
+        curve: Number.MIN_SAFE_INTEGER,
+        radius: Number.MAX_SAFE_INTEGER,
+        angle: Number.MIN_SAFE_INTEGER,
+        shorten: { source: 100, target: 0 },
+        colour: [360, 0, 100, 1],
+      }),
+    ];
+
+    for (const [index, source] of sources.entries()) {
+      expect(validateDocument(source)).toEqual([]);
+      const decoded = decodeSuccess(
+        encodeQuiverPayload(source),
+        `wire-boundary-${index}`,
+      );
+      expect(decoded.diagnostics).toEqual([]);
+      expect(decoded.document.edges).toHaveLength(1);
+    }
+  });
+
+  it.each([
+    ["negative label position", { labelPosition: -1 }, "labelPosition"],
+    ["fractional label position", { labelPosition: 50.5 }, "labelPosition"],
+    ["oversized label position", { labelPosition: 101 }, "labelPosition"],
+    ["fractional offset", { offset: 0.5 }, "offset"],
+    ["unsafe offset", { offset: Number.MAX_SAFE_INTEGER + 1 }, "offset"],
+    ["fractional curve", { curve: 0.5 }, "curve"],
+    ["unsafe radius", { radius: Number.MAX_SAFE_INTEGER + 1 }, "radius"],
+    ["fractional angle", { angle: -0.5 }, "angle"],
+  ] as const)("rejects %s", (_name, change, property) => {
+    const source = sourceWithOptions({ ...DEFAULT_EDGE_OPTIONS, ...change });
+    expect(validateDocument(source)).toEqual([]);
+
+    expect(() => encodeQuiverPayload(source)).toThrow(DocumentValidationError);
+    try {
+      encodeQuiverPayload(source);
+    } catch (error) {
+      expect((error as DocumentValidationError).diagnostics).toEqual([
+        expect.objectContaining({
+          code: "quiver-wire-number",
+          entityId: entityId("e-domain"),
+          path: `edges[0].options.${property}`,
+        }),
+      ]);
+    }
+  });
+
+  it.each([
+    ["vertex hue", [0.5, 0, 0, 1] as Hsla, "vertex"],
+    ["edge-label saturation", [0, 50.5, 0, 1] as Hsla, "edge-label"],
+    ["edge lightness", [0, 0, 99.5, 1] as Hsla, "edge"],
+  ] as const)(
+    "rejects a fractional %s colour component",
+    (_name, colour, target) => {
+      const first = vertex(
+        "v-colour-first",
+        0,
+        0,
+        "A",
+        target === "vertex" ? colour : BLACK_HSLA,
+      );
+      const second = vertex("v-colour-second", 1, 0);
+      const options = {
+        ...DEFAULT_EDGE_OPTIONS,
+        colour: target === "edge" ? colour : BLACK_HSLA,
+      };
+      const source = document(
+        [first, second],
+        [
+          edge(
+            "e-colour",
+            first.id,
+            second.id,
+            "f",
+            options,
+            target === "edge-label" ? colour : BLACK_HSLA,
+          ),
+        ],
+      );
+      expect(validateDocument(source)).toEqual([]);
+
+      expect(() => encodeQuiverPayload(source)).toThrow(
+        DocumentValidationError,
+      );
+      try {
+        encodeQuiverPayload(source);
+      } catch (error) {
+        expect((error as DocumentValidationError).diagnostics[0]).toEqual(
+          expect.objectContaining({ code: "quiver-wire-colour" }),
+        );
+      }
+    },
+  );
+
+  it.each([
+    ["negative source", { source: -1, target: 0 }, "shorten.source"],
+    [
+      "unsafe target",
+      { source: 0, target: Number.MAX_SAFE_INTEGER + 1 },
+      "shorten.target",
+    ],
+    ["sum above 100", { source: 51, target: 50 }, "shorten"],
+    ["asymmetric fractions", { source: 0.5, target: 1.5 }, "shorten"],
+  ] as const)("rejects %s shortening", (_name, shorten, property) => {
+    const source = sourceWithOptions({ ...DEFAULT_EDGE_OPTIONS, shorten });
+    expect(validateDocument(source)).toEqual([]);
+
+    expect(() => encodeQuiverPayload(source)).toThrow(DocumentValidationError);
+    try {
+      encodeQuiverPayload(source);
+    } catch (error) {
+      expect((error as DocumentValidationError).diagnostics).toEqual([
+        expect.objectContaining({
+          code: "quiver-wire-shorten",
+          entityId: entityId("e-domain"),
+          path: `edges[0].options.${property}`,
+        }),
+      ]);
+    }
+  });
+
+  it("rejects coordinates whose normalized wire position is not a safe integer", () => {
+    const source = document([
+      vertex("v-coordinate-first", Number.MIN_SAFE_INTEGER, 0),
+      vertex("v-coordinate-second", Number.MAX_SAFE_INTEGER, 0),
+    ]);
+    expect(validateDocument(source)).toEqual([]);
+
+    expect(() => encodeQuiverPayload(source)).toThrow(DocumentValidationError);
+    try {
+      encodeQuiverPayload(source);
+    } catch (error) {
+      expect((error as DocumentValidationError).diagnostics).toEqual([
+        expect.objectContaining({
+          code: "quiver-wire-coordinate",
+          entityId: entityId("v-coordinate-second"),
+          path: "vertices[1].x",
+        }),
+      ]);
+    }
+  });
+
+  it.each([
+    ["a loop with the exported Bézier defaults", true, "bezier", "arc"],
+    ["a non-loop stored as an arc", false, "arc", "bezier"],
+  ] as const)(
+    "rejects %s before its shape can change on export",
+    (_name, loop, shape, requiredShape) => {
+      const first = vertex("v-shape-first", 0, 0);
+      const second = vertex("v-shape-second", 1, 0);
+      const source = document(
+        [first, second],
+        [
+          edge("e-shape", first.id, loop ? first.id : second.id, "", {
+            ...DEFAULT_EDGE_OPTIONS,
+            shape,
+          }),
+        ],
+      );
+      expect(validateDocument(source)).toEqual([]);
+
+      expect(() => encodeQuiverPayload(source)).toThrow(
+        DocumentValidationError,
+      );
+      try {
+        encodeQuiverPayload(source);
+      } catch (error) {
+        expect((error as DocumentValidationError).diagnostics).toEqual([
+          expect.objectContaining({
+            code: "quiver-shape-mismatch",
+            entityId: entityId("e-shape"),
+            path: "edges[0].options.shape",
+            message: expect.stringContaining(requiredShape),
+          }),
+        ]);
+      }
+    },
+  );
+});
+
 describe("codec properties", () => {
   const labelArb = fc
     .array(fc.constantFrom("A", "x_y", "\\alpha", "日本語", "😀", "λ"), {
@@ -681,9 +1007,30 @@ describe("codec properties", () => {
       fc.integer({ min: 0, max: 360 }),
       fc.integer({ min: 0, max: 100 }),
       fc.integer({ min: 0, max: 100 }),
-      fc.constantFrom(0.5, 1),
+      fc.constantFrom(0, 0.5, 1),
     )
     .map((colour) => colour as Hsla);
+  const wireIntegerArb = fc.oneof(
+    fc.integer({ min: -1_000, max: 1_000 }),
+    fc.constant(Number.MIN_SAFE_INTEGER),
+    fc.constant(Number.MAX_SAFE_INTEGER),
+  );
+  const shortenArb = fc.oneof(
+    fc
+      .integer({ min: 0, max: 100 })
+      .chain((source) =>
+        fc
+          .integer({ min: 0, max: 100 - source })
+          .map((target) => ({ source, target })),
+      ),
+    fc
+      .integer({ min: 0, max: 100 })
+      .filter((length) => length % 2 === 1)
+      .map((length) => ({
+        source: (100 - length) / 2,
+        target: (100 - length) / 2,
+      })),
+  );
   const documentArb: fc.Arbitrary<DiagramDocument> = fc
     .tuple(
       fc.nat({ max: 1_000_000 }),
@@ -694,8 +1041,10 @@ describe("codec properties", () => {
       colourArb,
       colourArb,
       fc.constantFrom("left", "centre", "right", "over" as const),
-      fc.integer({ min: -6, max: 6 }),
-      fc.integer({ min: -6, max: 6 }),
+      fc.integer({ min: 0, max: 100 }),
+      wireIntegerArb,
+      wireIntegerArb,
+      shortenArb,
       fc.constantFrom<number | null>(null, 2, 3, 4),
       fc.constantFrom("arrow", "adjunction", "corner", "corner-inverse"),
       fc.boolean(),
@@ -712,8 +1061,10 @@ describe("codec properties", () => {
         secondColour,
         edgeColour,
         labelAlignment,
+        labelPosition,
         curve,
         offset,
+        shorten,
         level,
         styleName,
         sourceAlignment,
@@ -725,8 +1076,10 @@ describe("codec properties", () => {
         const options: EdgeOptions = {
           ...DEFAULT_EDGE_OPTIONS,
           labelAlignment,
+          labelPosition,
           curve,
           offset,
+          shorten,
           level,
           colour: edgeColour,
           edgeAlignment: {

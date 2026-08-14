@@ -1,6 +1,19 @@
-import { fireEvent, render, screen } from "@testing-library/react-native";
+import {
+  act,
+  fireEvent,
+  isHiddenFromAccessibility,
+  render,
+  screen,
+} from "@testing-library/react-native";
 import EditorRoute from "../app/editor/[id]";
-import { Text, useWindowDimensions, View } from "react-native";
+import {
+  Pressable,
+  StyleSheet,
+  Text,
+  useColorScheme,
+  useWindowDimensions,
+  View,
+} from "react-native";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { EditorScreen } from "../src/editor/EditorScreen";
 import {
@@ -19,9 +32,16 @@ jest.mock("react-native/Libraries/Utilities/useWindowDimensions", () => ({
   __esModule: true,
   default: jest.fn(),
 }));
+jest.mock("react-native/Libraries/Utilities/useColorScheme", () => ({
+  __esModule: true,
+  default: jest.fn(),
+}));
 
 const mockUseWindowDimensions = useWindowDimensions as jest.MockedFunction<
   typeof useWindowDimensions
+>;
+const mockUseColorScheme = useColorScheme as jest.MockedFunction<
+  typeof useColorScheme
 >;
 
 const safeAreaMetrics = {
@@ -29,12 +49,12 @@ const safeAreaMetrics = {
   insets: { top: 47, right: 0, bottom: 34, left: 0 },
 };
 
-function setWindow(width: number, height: number) {
+function setWindow(width: number, height: number, fontScale = 1.25) {
   mockUseWindowDimensions.mockReturnValue({
     width,
     height,
     scale: 3,
-    fontScale: 1.25,
+    fontScale,
   });
 }
 
@@ -54,6 +74,41 @@ function relativeLuminance(hex: string): number {
     channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4,
   );
   return red * 0.2126 + green * 0.7152 + blue * 0.0722;
+}
+
+function compositedContrast(
+  foreground: string,
+  background: string,
+  opacity: number,
+): number {
+  const channels = (hex: string) =>
+    hex
+      .slice(1)
+      .match(/.{2}/g)
+      ?.map((channel) => Number.parseInt(channel, 16) / 255);
+  const foregroundChannels = channels(foreground);
+  const backgroundChannels = channels(background);
+  if (
+    foregroundChannels === undefined ||
+    backgroundChannels === undefined ||
+    foregroundChannels.length !== 3 ||
+    backgroundChannels.length !== 3
+  ) {
+    throw new Error("Expected two six-digit hex colours");
+  }
+  const composite = foregroundChannels.map(
+    (channel, index) =>
+      channel * opacity + (backgroundChannels[index] ?? 0) * (1 - opacity),
+  );
+  const luminance = (rgb: readonly number[]) => {
+    const [red, green, blue] = rgb.map((channel) =>
+      channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4,
+    );
+    return red! * 0.2126 + green! * 0.7152 + blue! * 0.0722;
+  };
+  const first = luminance(composite);
+  const second = luminance(backgroundChannels);
+  return (Math.max(first, second) + 0.05) / (Math.min(first, second) + 0.05);
 }
 
 function contrastRatio(foreground: string, background: string): number {
@@ -99,9 +154,66 @@ async function renderEditor(width: number, height: number) {
   return { callbacks, ...rendered };
 }
 
+function responderEvent(
+  previousY: number,
+  currentY: number,
+  timestamp: number,
+) {
+  return {
+    nativeEvent: { touches: [{ pageX: 20, pageY: currentY }] },
+    touchHistory: {
+      indexOfSingleActiveTouch: 0,
+      mostRecentTimeStamp: timestamp,
+      numberActiveTouches: 1,
+      touchBank: [
+        {
+          currentPageX: 20,
+          currentPageY: currentY,
+          currentTimeStamp: timestamp,
+          previousPageX: 20,
+          previousPageY: previousY,
+          previousTimeStamp: timestamp - 1,
+          startPageX: 20,
+          startPageY: 500,
+          startTimeStamp: 1,
+          touchActive: true,
+        },
+      ],
+    },
+  };
+}
+
+async function dragInspectorBy(dy: number, sheetHeight = 600) {
+  const sheet = screen.getByTestId("editor-bottom-sheet");
+  const handle = screen.getByTestId("inspector-drag-handle");
+  const dragRegion = screen.queryByTestId("inspector-drag-region");
+  await fireEvent(sheet, "layout", {
+    nativeEvent: {
+      layout: { height: sheetHeight, width: 390, x: 0, y: 0 },
+    },
+  });
+
+  expect(dragRegion).not.toBeNull();
+  if (dragRegion === null) {
+    return handle;
+  }
+  expect(dragRegion.props.onResponderGrant).toEqual(expect.any(Function));
+  expect(dragRegion.props.onResponderMove).toEqual(expect.any(Function));
+  expect(dragRegion.props.onResponderRelease).toEqual(expect.any(Function));
+  const grant = responderEvent(500, 500, 1);
+  const move = responderEvent(500, 500 + dy, 2);
+  await act(async () => {
+    dragRegion.props.onResponderGrant(grant);
+    dragRegion.props.onResponderMove(move);
+    dragRegion.props.onResponderRelease(move);
+  });
+  return handle;
+}
+
 describe("adaptive layout contract", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockUseColorScheme.mockReturnValue("light");
   });
 
   it("switches from compact to regular at exactly 720 dp", async () => {
@@ -127,6 +239,31 @@ describe("adaptive layout contract", () => {
 
     for (const [foreground, background] of pairs) {
       expect(contrastRatio(foreground, background)).toBeGreaterThanOrEqual(4.5);
+    }
+  });
+
+  it("composites the rendered handle cue at 3:1 non-text contrast in both themes", async () => {
+    for (const mode of ["light", "dark"] as const) {
+      mockUseColorScheme.mockReturnValue(mode);
+      const rendered = await renderEditor(390, 844);
+      const cue = screen.queryByTestId("inspector-handle-cue");
+      expect(cue).not.toBeNull();
+      if (cue === null) {
+        await rendered.unmount();
+        continue;
+      }
+      const style = StyleSheet.flatten(cue.props.style);
+      expect(typeof style.backgroundColor).toBe("string");
+      expect(typeof style.opacity).toBe("number");
+      const surface = mode === "light" ? lightTheme : darkTheme;
+      expect(
+        compositedContrast(
+          style.backgroundColor as string,
+          surface.colors.surface,
+          style.opacity as number,
+        ),
+      ).toBeGreaterThanOrEqual(3);
+      await rendered.unmount();
     }
   });
 
@@ -201,6 +338,102 @@ describe("editor shell", () => {
     expect(handle).toHaveAccessibilityValue({ text: "Full height" });
     await fireEvent.press(handle);
     expect(handle).toHaveAccessibilityValue({ text: "Collapsed" });
+  });
+
+  it("snaps real upward and downward handle drags to the nearest sheet point", async () => {
+    await renderEditor(390, 844);
+    let handle = screen.getByTestId("inspector-drag-handle");
+    expect(handle).toHaveAccessibilityValue({ text: "Half height" });
+
+    handle = await dragInspectorBy(-260);
+    expect(handle).toHaveAccessibilityValue({ text: "Full height" });
+
+    handle = await dragInspectorBy(280);
+    expect(handle).toHaveAccessibilityValue({ text: "Half height" });
+
+    handle = await dragInspectorBy(400);
+    expect(handle).toHaveAccessibilityValue({ text: "Collapsed" });
+  });
+
+  it("uses deterministic nearest boundaries and clamps compact drag extremes", async () => {
+    await renderEditor(390, 844);
+
+    let handle = await dragInspectorBy(-149);
+    expect(handle).toHaveAccessibilityValue({ text: "Half height" });
+    handle = await dragInspectorBy(-150);
+    expect(handle).toHaveAccessibilityValue({ text: "Full height" });
+    handle = await dragInspectorBy(-10_000);
+    expect(handle).toHaveAccessibilityValue({ text: "Full height" });
+
+    await fireEvent(handle, "accessibilityAction", {
+      nativeEvent: { actionName: "decrement" },
+    });
+    expect(handle).toHaveAccessibilityValue({ text: "Half height" });
+    handle = await dragInspectorBy(104);
+    expect(handle).toHaveAccessibilityValue({ text: "Half height" });
+    handle = await dragInspectorBy(105);
+    expect(handle).toHaveAccessibilityValue({ text: "Collapsed" });
+    handle = await dragInspectorBy(10_000);
+    expect(handle).toHaveAccessibilityValue({ text: "Collapsed" });
+  });
+
+  it("keeps large-font inspector state mounted but inaccessible and inert when collapsed", async () => {
+    setWindow(390, 844, 3.2);
+    const onHiddenAction = jest.fn();
+    await render(
+      <SafeAreaProvider initialMetrics={safeAreaMetrics}>
+        <ThemeProvider>
+          <EditorScreen
+            title="Naturality square"
+            canvas={<View testID="test-canvas" />}
+            inspector={
+              <Pressable
+                accessibilityLabel="Hidden inspector action"
+                accessibilityRole="button"
+                onPress={onHiddenAction}
+                testID="hidden-inspector-action"
+              >
+                <Text allowFontScaling maxFontSizeMultiplier={3.2}>
+                  Large inspector action
+                </Text>
+              </Pressable>
+            }
+            selectionState={{ kind: "vertex", count: 2 }}
+            {...editorCallbacks()}
+          />
+        </ThemeProvider>
+      </SafeAreaProvider>,
+    );
+
+    const handle = screen.getByTestId("inspector-drag-handle");
+    const hiddenAction = screen.getByTestId("hidden-inspector-action");
+    expect(
+      screen.getByRole("button", { name: "Hidden inspector action" }),
+    ).toBe(hiddenAction);
+    expect(isHiddenFromAccessibility(hiddenAction)).toBe(false);
+
+    await fireEvent.press(handle);
+    await fireEvent.press(handle);
+    expect(handle).toHaveAccessibilityValue({ text: "Collapsed" });
+
+    expect(hiddenAction).toBeOnTheScreen();
+    expect(isHiddenFromAccessibility(hiddenAction)).toBe(true);
+    expect(
+      screen.queryByRole("button", { name: "Hidden inspector action" }),
+    ).toBeNull();
+    await fireEvent.press(hiddenAction);
+    expect(onHiddenAction).not.toHaveBeenCalled();
+
+    const collapsibleContent = screen.queryByTestId(
+      "inspector-collapsible-content",
+      { includeHiddenElements: true },
+    );
+    expect(collapsibleContent).not.toBeNull();
+    expect(collapsibleContent?.props.accessibilityElementsHidden).toBe(true);
+    expect(collapsibleContent?.props.importantForAccessibility).toBe(
+      "no-hide-descendants",
+    );
+    expect(collapsibleContent?.props.pointerEvents).toBe("none");
   });
 
   it.each([

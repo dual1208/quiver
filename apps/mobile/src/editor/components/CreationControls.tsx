@@ -7,6 +7,7 @@ type CreationButtonProps = Readonly<{
   label: string;
   symbol: string;
   primary?: boolean;
+  selected?: boolean;
   onPress: () => void;
 }>;
 
@@ -16,6 +17,7 @@ export type CreationControlsProps = Readonly<{
   onConnectSelection: () => void;
   onSelectMode: () => void;
   onFitToContent: () => void;
+  selectionModeActive?: boolean;
 }>;
 
 function CreationButton({
@@ -23,10 +25,15 @@ function CreationButton({
   label,
   symbol,
   primary = false,
+  selected = false,
   onPress,
 }: CreationButtonProps) {
   const theme = useTheme();
-  const backgroundColor = primary ? theme.colors.primary : theme.colors.surface;
+  const backgroundColor = primary
+    ? theme.colors.primary
+    : selected
+      ? theme.colors.primarySurface
+      : theme.colors.surface;
   const color = primary ? theme.colors.onPrimary : theme.colors.textPrimary;
 
   return (
@@ -39,7 +46,8 @@ function CreationButton({
         styles.control,
         {
           backgroundColor,
-          borderColor: primary ? theme.colors.primary : theme.colors.border,
+          borderColor:
+            primary || selected ? theme.colors.primary : theme.colors.border,
           minHeight: theme.minimumTargetSize,
           minWidth: theme.minimumTargetSize,
           shadowColor: theme.colors.shadow,
@@ -64,6 +72,7 @@ export function CreationControls({
   onConnectSelection,
   onSelectMode,
   onFitToContent,
+  selectionModeActive = false,
 }: CreationControlsProps) {
   const theme = useTheme();
   const compact = layoutClass === "compact";
@@ -96,8 +105,13 @@ export function CreationControls({
         testID="connect-selection"
       />
       <CreationButton
-        label="Selection mode"
+        label={
+          selectionModeActive
+            ? "Turn off multiple selection"
+            : "Select multiple objects"
+        }
         onPress={onSelectMode}
+        selected={selectionModeActive}
         symbol="⌁"
         testID="selection-mode"
       />

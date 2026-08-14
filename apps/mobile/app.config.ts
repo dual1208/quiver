@@ -37,7 +37,6 @@ export default ({ config }: ConfigContext): ExpoConfig => {
     version: "1.0.0",
     scheme: "quiver",
     orientation: "default",
-    userInterfaceStyle: "automatic",
     icon: "./assets/images/icon.png",
     ios: {
       buildNumber: "1",

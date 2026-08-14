@@ -21,6 +21,7 @@ export type EditorScreenProps = Readonly<{
   canvas: ReactNode;
   inspector: ReactNode;
   selectionState: EditorSelectionState;
+  selectionModeActive?: boolean;
   canUndo?: boolean;
   canRedo?: boolean;
 }> &
@@ -38,6 +39,7 @@ export function EditorScreen({
   canvas,
   inspector,
   selectionState,
+  selectionModeActive = false,
   canUndo = false,
   canRedo = false,
   onBack,
@@ -84,6 +86,7 @@ export function EditorScreen({
             onCreateVertex={onCreateVertex}
             onFitToContent={onFitToContent}
             onSelectMode={onSelectMode}
+            selectionModeActive={selectionModeActive}
           />
         ) : null}
         <View
@@ -106,6 +109,7 @@ export function EditorScreen({
             onCreateVertex={onCreateVertex}
             onFitToContent={onFitToContent}
             onSelectMode={onSelectMode}
+            selectionModeActive={selectionModeActive}
           />
         )}
       </View>

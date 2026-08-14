@@ -1,23 +1,17 @@
 import { Stack } from "expo-router";
-import { createContext, type PropsWithChildren } from "react";
+import { type PropsWithChildren, useEffect } from "react";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { ThemeProvider } from "../src/theme/ThemeProvider";
-
-type RepositoryBootstrap = Readonly<{
-  status: "pending";
-}>;
-
-const repositoryBootstrap: RepositoryBootstrap = { status: "pending" };
-const RepositoryContext =
-  createContext<RepositoryBootstrap>(repositoryBootstrap);
+import { diagramRepository } from "../src/data";
 
 function RepositoryProvider({ children }: PropsWithChildren) {
-  return (
-    <RepositoryContext.Provider value={repositoryBootstrap}>
-      {children}
-    </RepositoryContext.Provider>
-  );
+  useEffect(() => {
+    void diagramRepository.initialize().catch(() => {
+      // Routes surface actionable repository errors where the user can retry.
+    });
+  }, []);
+  return children;
 }
 
 export default function RootLayout() {

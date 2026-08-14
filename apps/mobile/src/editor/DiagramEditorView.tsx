@@ -40,6 +40,7 @@ export function DiagramEditorView({
   const canvasRef = useRef<DiagramCanvasHandle>(null);
   const latestDocumentRef = useRef(editor.document);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastSaveErrorRef = useRef<unknown>(null);
   const [multiSelect, setMultiSelect] = useState(false);
 
   useEffect(() => {
@@ -49,7 +50,14 @@ export function DiagramEditorView({
     }
     saveTimerRef.current = setTimeout(() => {
       saveTimerRef.current = null;
-      void onSave(editor.document);
+      void Promise.resolve(onSave(editor.document)).then(
+        () => {
+          lastSaveErrorRef.current = null;
+        },
+        (error: unknown) => {
+          lastSaveErrorRef.current = error;
+        },
+      );
     }, 220);
     return () => {
       if (saveTimerRef.current !== null) {
@@ -105,9 +113,19 @@ export function DiagramEditorView({
       clearTimeout(saveTimerRef.current);
       saveTimerRef.current = null;
     }
-    void Promise.resolve(onSave(latestDocumentRef.current)).finally(() => {
-      router.back();
-    });
+    void Promise.resolve(onSave(latestDocumentRef.current)).then(
+      () => {
+        lastSaveErrorRef.current = null;
+        router.back();
+      },
+      (error: unknown) => {
+        lastSaveErrorRef.current = error;
+        Alert.alert(
+          "Could not save diagram",
+          error instanceof Error ? error.message : "Please try again.",
+        );
+      },
+    );
   }, [onSave]);
 
   const shareDiagram = useCallback(() => {
@@ -176,6 +194,7 @@ export function DiagramEditorView({
       onShare={shareDiagram}
       onUndo={editor.undo}
       selectionState={state}
+      selectionModeActive={multiSelect}
       title={editor.document.title || "Untitled diagram"}
     />
   );

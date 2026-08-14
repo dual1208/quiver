@@ -16,7 +16,7 @@ import { diagramRepository, type DiagramSummary } from "../src/data";
 import { LibraryScreen } from "../src/library/LibraryScreen";
 import { useTheme } from "../src/theme/ThemeProvider";
 
-function displayUpdated(timestamp: string): string {
+function displayUpdated(timestamp: number): string {
   const value = new Date(timestamp);
   if (Number.isNaN(value.getTime())) {
     return "Saved locally";

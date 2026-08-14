@@ -7,3 +7,16 @@ legacy-web/Workbox/*
 legacy-web/workbox-*
 legacy-web/service-worker.js*
 legacy-web/icon-*.png
+
+# Physical-device lab state and generated evidence.
+lab/devices.local.json
+artifacts/
+scripts/lab/.venv/
+**/__pycache__/
+**/.pytest_cache/
+*.py[cod]
+*.xcresult/
+*.apk
+*.aab
+*.app/
+_work/

@@ -15,6 +15,18 @@ typecheck:
 test:
     npm test
 
-check: fmt lint typecheck test
+lab-sync:
+    uv sync --project scripts/lab --locked
+
+lab-test:
+    uv run --project scripts/lab --locked pytest scripts/lab/tests -q
+
+lab-inventory:
+    uv run --project scripts/lab --locked quiver-lab inventory --json
+
+lab-inventory-strict:
+    uv run --project scripts/lab --locked quiver-lab inventory --strict --json
+
+check: fmt lint typecheck test lab-test
 
 ci: check

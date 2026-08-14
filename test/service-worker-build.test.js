@@ -1,5 +1,12 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  copyFile,
+  mkdtemp,
+  mkdir,
+  readFile,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,7 +15,7 @@ import { describe, expect, it } from "vitest";
 
 const execFileAsync = promisify(execFile);
 const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
-const buildScript = join(repositoryRoot, "service-worker", "build.js");
+const sourceBuildScript = join(repositoryRoot, "service-worker", "build.js");
 
 const fakeWorkboxSource = `
 const { readdir, readFile, writeFile } = require("node:fs/promises");
@@ -44,25 +51,26 @@ describe("legacy service-worker build", () => {
     const serviceWorkerDirectory = join(fixtureRoot, "service-worker");
     const legacyDirectory = join(fixtureRoot, "legacy-web");
     const staleDirectory = join(fixtureRoot, "src");
-    const fakeModules = join(fixtureRoot, "fake-node-modules");
+    const fixtureBuildScript = join(serviceWorkerDirectory, "build.js");
+    const fakeModules = join(serviceWorkerDirectory, "node_modules");
     const fakeWorkbox = join(fakeModules, "workbox-build", "index.js");
 
     try {
       await Promise.all([
-        mkdir(serviceWorkerDirectory),
-        mkdir(legacyDirectory),
-        mkdir(staleDirectory),
+        mkdir(serviceWorkerDirectory, { recursive: true }),
+        mkdir(legacyDirectory, { recursive: true }),
+        mkdir(staleDirectory, { recursive: true }),
         mkdir(dirname(fakeWorkbox), { recursive: true }),
       ]);
       await Promise.all([
+        copyFile(sourceBuildScript, fixtureBuildScript),
         writeFile(join(legacyDirectory, "app.txt"), "current legacy app"),
         writeFile(join(staleDirectory, "app.txt"), "stale removed app"),
         writeFile(fakeWorkbox, fakeWorkboxSource),
       ]);
 
-      await execFileAsync(process.execPath, [buildScript], {
+      await execFileAsync(process.execPath, [fixtureBuildScript], {
         cwd: serviceWorkerDirectory,
-        env: { ...process.env, NODE_PATH: fakeModules },
       });
 
       await expect(

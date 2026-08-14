@@ -466,48 +466,98 @@ git commit -m "feat(core): add versioned native document codec"
 
 **Files:**
 - Create: `packages/core/src/geometry/point.ts`
+- Create: `packages/core/src/geometry/path.ts`
 - Create: `packages/core/src/geometry/curve.ts`
 - Create: `packages/core/test/geometry/point.test.ts`
 - Create: `packages/core/test/geometry/curve.test.ts`
 - Create: `packages/core/test/geometry/properties.test.ts`
+- Create: `packages/test-fixtures/upstream/curve-goldens.json`
 - Modify: `packages/core/src/index.ts`
 
 **Interfaces:**
 - Consumes: finite numeric values.
-- Produces: `Point`, `Size`, `Rect`, `Viewport`, `CurvePoint`, `BezierCurve`, `ArcCurve`, `RoundedRect`, `documentToScreen`, `screenToDocument`.
+- Produces: `EPSILON`, `GeometryError`, `Point`, `Size`, `Rect`, `Viewport`, `Curve`, `CurvePoint`,
+  `PathCommand`, `BezierCurve`, `ArcCurve`, `RoundedRect`, `CurveRoundedRectRelation`,
+  `documentToScreen`, `screenToDocument`.
+
+All public curve geometry uses absolute document coordinates, x-right/y-down axes, radians, and positive
+clockwise rotation. Keep continuous `Point` distinct from the model's integer `GridPoint`. `CurvePoint` is
+`{ point, t, tangentAngle }`; a `Curve` exposes start/end/exact bounds/total length, point and tangent by
+parameter, forward/inverse arc length, pure path commands, and rounded-rectangle relation. Path records are
+renderer-neutral `move | line | quad | cubic | arc | close`; the arc record carries radii, x-axis rotation,
+`largeArc`, `clockwise`, and endpoint so Skia can translate it without core importing Skia.
 
 - [ ] **Step 1: Write failing vector/viewport/curve tests**
 
-Port the numeric expectations from `src/tests/arrow.html` and add inverse viewport properties:
+`legacy-web/tests/arrow.html` is only an interactive DOM lab, not a numeric test oracle. Extract checked-in
+goldens directly from `legacy-web/curve.mjs`: quadratic `(0,0) -> (50,40) -> (100,0)` points/tangents and
+lengths; its negative mirror; chord-64/radius-40 minor/major clockwise/counterclockwise arcs; straight,
+tangent, contained/disjoint, translated/rotated, rounded/sharp-rectangle, and split-full-circle cases. Use
+a local `expectPointClose` helper and add inverse viewport properties:
+
+```text
+quadratic p(.25)=(25,15), p(.5)=(50,20)
+tangent(.25)=0.6747409422235527, tangent(.5)=0, tangent(.75)=-0.6747409422235527
+length(.25)=29.233619379040814, length(.5)=54.84634704158012, total=109.79046158962747
+minor clockwise arc midpoint=(32,-16), total=74.18361744012898
+major clockwise arc midpoint=(32,-64), total=177.14379484705447
+```
 
 ```ts
 fc.assert(fc.property(viewportArb, pointArb, (viewport, point) => {
-  expect(screenToDocument(viewport, documentToScreen(viewport, point))).toApproximatelyEqual(point);
+  expectPointClose(screenToDocument(viewport, documentToScreen(viewport, point)), point);
 }));
 ```
 
-Test straight, positive/negative Bézier, minor/major arc, rounded-rectangle intersections, containment,
-arc-length monotonicity, and clamping outside path length.
+With fixed-seed constructive generators and at least 1,000 runs, test transform equivariance,
+endpoint/path agreement, finite outputs, exact bounds containment, reverse symmetry, monotone arc length,
+forward/inverse consistency, and intersection points sorted by `t`, epsilon-unique, on-curve, and on the
+boundary. Permanently regress upstream's non-monotone case `(0,0) -> (0.5,-500) -> (1,0)`, its duplicate
+straight intersections, zero-width/nonzero-control out-and-back curve, invalid arcs, tangencies, huge
+angles, negative dimensions, zero scale, and subdivision limits.
 
 - [ ] **Step 2: Port immutable point and viewport math**
 
-Replace upstream subclasses with readonly plain classes/value records. Every constructor calls
-`assertFinite`. Viewport conversion uses `screen = document * scale + translation`, with scale constrained
-by the caller rather than silently clamped in core.
+Replace upstream subclasses with readonly plain classes/value records. Every constructor validates inputs
+and derived scalars, normalizes `-0`, and rejects overflow/NaN. `Rect` uses top-left x/y/width/height with
+nonnegative dimensions plus `fromCenter`. Viewport conversion uses
+`screen = document * scale + translation`; core requires a finite strictly positive scale because inverse
+conversion is otherwise undefined.
 
 - [ ] **Step 3: Port Bézier, arc, and rounded-rectangle algorithms**
 
-Translate `src/curve.mjs` without DOM or SVG path dependencies. Curve render methods return path command
-records (`move`, `line`, `quad`, `cubic`, `arc`) consumed by renderers/exporters. Preserve `EPSILON` and
-the upstream containment semantics.
+Translate and correct the math in `legacy-web/curve.mjs` without DOM/SVG/Skia dependencies. Use general
+quadratic `BezierCurve(start, control, end)` plus a symmetric factory. Build one deterministic bounded
+adaptive de Casteljau table for each immutable Bézier using control-polygon-minus-chord flatness; sorted
+`t` and cumulative positive lengths drive both `arcLengthAt` and `parameterAtLength`. Reject constant
+curves and return a typed degenerate-tangent failure at cusps rather than NaN.
+
+Canonical `ArcCurve` stores centre, positive radius, start angle, and signed sweep; its chord factory takes
+`largeArc` and `clockwise`, rejects impossible chords, and supports full circles as two path arcs. Use
+constant-time angle modulo, scale-aware epsilon clamping before square roots, positive intersection
+tolerance, and deterministic segment caps.
+
+Do not preserve upstream bugs or mixed local/world coordinates. Rounded-rectangle queries return exactly:
+
+```ts
+type CurveRoundedRectRelation =
+  | { readonly kind: "intersections"; readonly points: readonly CurvePoint[] }
+  | { readonly kind: "contained" }
+  | { readonly kind: "disjoint" };
+```
+
+Never fabricate a containment point or deduplicate by object identity. Task 7—not generic geometry—owns
+Quiver UI scale factors (`curve * 48`, `offset * 8`), degree conversion, loop-radius mapping, chord
+thresholds, and the legacy self-loop nudge.
 
 - [ ] **Step 4: Verify properties and commit**
 
 Run: `npm test -w @quiver/core -- test/geometry`  
-Expected: all upstream examples and 1,000 finite random viewport round trips pass.
+Expected: corrected upstream goldens plus at least 1,000 deterministic geometry properties pass; all
+length/inverse/intersection work is finite, bounded, monotone, and coordinate-consistent.
 
 ```bash
-git add packages/core/src/geometry packages/core/test/geometry packages/core/src/index.ts
+git add packages/core/src/geometry packages/core/test/geometry packages/test-fixtures/upstream/curve-goldens.json packages/core/src/index.ts
 git commit -m "feat(core): port deterministic diagram geometry"
 ```
 

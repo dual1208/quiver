@@ -480,15 +480,18 @@ git commit -m "feat(core): add versioned native document codec"
 **Interfaces:**
 - Consumes: finite numeric values.
 - Produces: `EPSILON`, `GeometryError`, `Point`, `Size`, `Rect`, `Viewport`, `Curve`, `CurvePoint`,
-  `PathCommand`, `BezierCurve`, `ArcCurve`, `RoundedRect`, `CurveRoundedRectRelation`,
+`PathCommand`, `BezierCurve`, `ArcCurve`, `RoundedRect`, `CurveRoundedRectRelation`,
   `documentToScreen`, `screenToDocument`.
 
 All public curve geometry uses absolute document coordinates, x-right/y-down axes, radians, and positive
 clockwise rotation. Keep continuous `Point` distinct from the model's integer `GridPoint`. `CurvePoint` is
 `{ point, t, tangentAngle }`; a `Curve` exposes start/end/exact bounds/total length, point and tangent by
-parameter, forward/inverse arc length, pure path commands, and rounded-rectangle relation. Path records are
-renderer-neutral `move | line | quad | cubic | arc | close`; the arc record carries radii, x-axis rotation,
-`largeArc`, `clockwise`, and endpoint so Skia can translate it without core importing Skia.
+parameter, forward/inverse arc length, pure full/ranged path commands, exact ranged bounds, deterministic
+closest-point-on-range, and rounded-rectangle relation. Path records are renderer-neutral
+`move | line | quad | cubic | arc | close`; the arc record carries radii, x-axis rotation, `largeArc`,
+`clockwise`, and endpoint so Skia can translate it without core importing Skia. Closest-point queries use
+the same bounded adaptive segments as arc length plus a fixed safeguarded refinement; Task 7 must not fall
+back to unbounded or fixed uniform sampling.
 
 - [ ] **Step 1: Write failing vector/viewport/curve tests**
 
@@ -568,50 +571,111 @@ git commit -m "feat(core): port deterministic diagram geometry"
 
 **Files:**
 - Create: `packages/core/src/geometry/arrow.ts`
+- Create: `packages/core/src/geometry/arrow-decorations.ts`
 - Create: `packages/core/src/geometry/spatial-index.ts`
+- Create: `packages/core/src/geometry/hit-test.ts`
 - Create: `packages/core/test/geometry/arrow.test.ts`
 - Create: `packages/core/test/geometry/hit-test.test.ts`
+- Create: `packages/test-fixtures/upstream/arrow-goldens.json`
+- Modify: `packages/core/src/model/validate.ts`
 - Modify: `packages/core/src/index.ts`
 
 **Interfaces:**
 - Consumes: document entities, measured label/node bounds, curve primitives.
-- Produces: `buildArrowGeometry(input): ArrowGeometry`, `buildSpatialIndex(items): SpatialIndex`, `hitTestPoint(index, point, tolerance): readonly HitResult[]`.
+- Produces: `buildArrowGeometry(input): ArrowLayoutResult`,
+  `buildDiagramGeometry(document, metrics): DiagramGeometryResult`, opaque incremental `SpatialIndex`, and
+  `hitTestPoint(index, point, tolerance): readonly HitResult[]`.
+
+`buildDiagramGeometry` is mandatory: process edges by structural level then stored index so higher cells
+can resolve lower-edge anchors. Add one batch structural-level computation rather than repeatedly calling
+the current whole-document `entityLevel`. Every lower edge exposes a cropped `anchor` and an untrimmed
+`phantomAnchor`; `edgeAlignment` selects between them for higher endpoints. Return discriminated success or
+stable diagnostics (`missing-layout`, `fully-cropped`, `negative-visible-length`, `invalid-loop-radius`,
+`unsupported-style-combination`, `geometry-limit`) and never partially built decorations.
 
 - [ ] **Step 1: Write failing arrow goldens**
 
 Cover a straight arrow, curved parallel arrows, loop, shortened arrow, edge-to-edge higher cell, and every
-tail/body/head family in the upstream styles fixture. Golden values include endpoints, curve commands,
-label anchor/tangent, head/tail transforms, and bounds rounded to `1e-5`.
+tail/body/head family in the upstream styles fixture. That 16-vertex/9-edge fixture is not exhaustive; add
+synthetic double-barred, solid/hollow bullet, no-body, tail-arrowhead, head-none, adjunction, corner, and
+corner-inverse cases. Golden endpoints, ranges, commands, label/tangent, decorations, occlusions, ports,
+and bounds rounded to `1e-5`.
+
+For two 64×64 radius-16 nodes centered at `(0,0)` and `(128,0)`, lock straight crop `[.25,.75]`, ports
+`(32,0)/(96,0)`, length 64, anchor `(64,0)`; offset `+2` moves ports to y=16; shortening 20/30 yields
+range `[.35,.60]` and points `(44.8,0)/(76.8,0)`. Lock head size 6×13.5, maps-to tail, hooks, adjunction,
+dash `[6,6]`, dots `[2,4]`, the radius-option-3 loop apex/crop, and a higher-cell fixture whose lower-edge
+anchor is `(56,0)` but phantom anchor `(64,0)`.
 
 - [ ] **Step 2: Define render-independent geometry records**
 
 ```ts
 export interface ArrowGeometry {
   readonly id: EntityId;
+  readonly structuralLevel: number;
+  readonly visualLevel: number;
   readonly curve: Curve;
-  readonly visibleRange: readonly [number, number];
-  readonly labelAnchor: Point;
-  readonly labelAngle: number;
-  readonly pathCommands: readonly PathCommand[];
+  readonly croppedRange: readonly [number, number];
+  readonly shortenedRange: readonly [number, number];
+  readonly bodyRange: readonly [number, number];
+  readonly body: ArrowBodyGeometry;
   readonly decorations: readonly ArrowDecoration[];
+  readonly occlusions: readonly ArrowOcclusion[];
+  readonly label: ArrowLabelGeometry | null;
+  readonly ports: Readonly<{ source: Point; target: Point }>;
+  readonly anchor: Point;
+  readonly phantomAnchor: Point;
   readonly bounds: Rect;
+  readonly interactionBounds: Rect;
 }
 ```
 
+Centralize upstream UI scales in frozen `QUIVER_ARROW_METRICS` here—not Task 6: grid 128, curve-control
+48, offset 8, loop-radius unit 16, label padding 8, stroke 1.5, line spacing 4.5, head spacing 2,
+squiggle amplitude 2/half-wavelength 4/padding 4, adjunction 16, corner 12, port radius 14, chord thresholds
+64/96, and loop nudge .01. Convert model degrees to radians once. Loop radius mapping is
+`±1 -> ±32`, `±2/±3 -> ±48`, `±4/±5 -> ±64`; reject zero or larger magnitudes.
+
 - [ ] **Step 3: Port layout and add broad/exact hit testing**
 
-Translate the math from `src/arrow.mjs`; replace SVG measurement with explicit `ShapeBounds` inputs.
-Spatial index buckets are 128 document units. Query expands by tolerance, then exact tests compute distance
-to vertices, sampled/analytically refined curve distance, labels, and ports. Results sort by visual z-order
-then distance.
+Replace DOM measurement with explicit vertex/label metrics. Deterministic construction order is: resolve
+lower endpoint shapes; map the complete style; construct the unshifted absolute curve; crop source to the
+lowest crossing and target to the highest; convert shorten percentages using cropped arc length; reject a
+negative range; apply the `offset * 8` normal shift to the entire curve/ports; then build body,
+decorations, occlusions, label, anchors, and bounds. Point endpoints use t=0/1; containment or inverted
+ranges fail typed. Ports stay at cropped endpoints before explicit shortening. This order fixes upstream's
+stale-style shortening bug.
+
+Non-loop arcs use straight for chord >=96, a minor arc with sagitta `96-chord` for 64..96, and a major arc
+whose positive radius magnitude interpolates from 32 to configured loop radius below 64; apply direction
+sign afterward so negative settings cannot create NaN. Labels interpolate cropped parameters (not arc
+length); side-label normal uses the actual label parameter, `over` uses chord angle, and other labels remain
+horizontal. Records describe compositing: parametric dash patterns, multi-line masks, label/bullet
+occlusions, and path/circle fill/stroke roles. Cap generated commands at 8,192 and label search at 32.
+
+Keep the 128-unit broad-phase index separate from exact hit testing. Use immutable rounded-rect,
+oriented-rect, circle, ranged-curve, and decoration hit shapes. Bucket with `Math.floor` for negatives,
+deduplicate multi-bucket candidates, cap each item at 4,096 buckets with an overflow list, and use bounded
+scan for huge tolerances. Exact distances are analytic for rectangles/circles/arcs; quadratic distance is
+seeded by Task 6 adaptive segments and refined for exactly 16 safeguarded iterations. Logical body hits
+span dash gaps but exclude shortened ranges; hidden ports are not indexed.
+
+`HitResult` includes entity ID, part, distance, nearest point, optional curve t, and optional port end.
+Sort topmost-first as `port > label > vertex > edge`; edges use higher structural level, then later stored
+item, then smaller distance, then stable key. Visual stroke level never changes z-order. Tolerance must be
+finite/nonnegative and is supplied in document units (`screenPixels / viewport.scale`).
 
 - [ ] **Step 4: Verify and commit**
 
 Run: `npm test -w @quiver/core -- test/geometry/arrow.test.ts test/geometry/hit-test.test.ts`  
-Expected: goldens pass and near-miss tests do not select outside expanded hit regions.
+Expected: goldens pass plus at least 1,000 fixed-seed constructive properties for finite ordered ranges,
+translation/rotation/reversal, deep ownership, higher-cell anchors, bounds containment, incremental-index
+equivalence, indexed-vs-brute-force hits, negative bucket boundaries, huge items/tolerances, ties, rounded
+corners, loop-centre misses, rotated labels, hidden ports, and shortened regions. Near misses never select
+outside expanded hit regions; all work respects explicit command/search/bucket caps.
 
 ```bash
-git add packages/core/src/geometry packages/core/test/geometry packages/core/src/index.ts
+git add packages/core/src/geometry packages/core/src/model/validate.ts packages/core/test/geometry packages/test-fixtures/upstream/arrow-goldens.json packages/core/src/index.ts
 git commit -m "feat(core): add arrow layout and hit testing"
 ```
 

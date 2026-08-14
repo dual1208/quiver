@@ -1,0 +1,42 @@
+name: Deploy to physical devices
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: quiver-physical-device-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Build, install, and launch
+    runs-on: [self-hosted, macOS, ARM64, quiver-mac-mini]
+    timeout-minutes: 120
+    env:
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      APPLE_TEAM_ID_VAR: ${{ vars.APPLE_TEAM_ID }}
+      CI: "1"
+    steps:
+      - name: Check out the requested commit
+        uses: actions/checkout@v4
+
+      - name: Select Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+
+      - name: Build and deploy one artifact per platform
+        run: ./scripts/deploy-connected.sh
+
+      - name: Preserve build and deployment artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: quiver-device-deploy-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/device-deploy/
+          if-no-files-found: warn
+          retention-days: 14

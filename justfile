@@ -28,6 +28,9 @@ lab-inventory:
 lab-inventory-strict:
     uv run --project scripts/lab --locked quiver-lab inventory --strict --json
 
+deploy-connected:
+    ./scripts/deploy-connected.sh
+
 check: fmt lint typecheck test lab-test
 
 ci: check

@@ -12,11 +12,14 @@
   },
   "packageManager": "npm@11.16.0",
   "scripts": {
-    "fmt": "prettier --check --ignore-unknown package.json tsconfig.base.json vitest.workspace.ts packages test",
-    "lint": "eslint packages test --ext .js,.ts --report-unused-disable-directives --max-warnings 0",
-    "typecheck": "tsc -b packages/core",
+    "fmt": "prettier --check --ignore-unknown package.json tsconfig.base.json vitest.workspace.ts apps packages test",
+    "lint": "eslint apps packages test --ext .js,.ts,.tsx --report-unused-disable-directives --max-warnings 0",
+    "typecheck": "npm-run-all typecheck:*",
+    "typecheck:core": "tsc -b packages/core",
+    "typecheck:mobile": "npm run typecheck -w @quiver/mobile",
     "test": "vitest run --config vitest.workspace.ts",
-    "ci": "npm-run-all fmt lint typecheck test"
+    "test:mobile": "npm test -w @quiver/mobile -- --runInBand",
+    "ci": "npm-run-all fmt lint typecheck test test:mobile"
   },
   "devDependencies": {
     "@typescript-eslint/eslint-plugin": "8.67.0",
@@ -24,6 +27,8 @@
     "eslint": "8.57.1",
     "npm-run-all2": "8.0.4",
     "prettier": "3.9.6",
+    "react": "19.2.3",
+    "react-dom": "19.2.3",
     "typescript": "5.9.3",
     "vitest": "4.1.10"
   },
@@ -48,10 +53,14 @@
     "ignorePatterns": [
       "legacy-web/",
       "node_modules/",
+      "apps/*/.expo/",
+      "apps/*/android/",
+      "apps/*/ios/",
       "**/dist/"
     ]
   },
   "allowScripts": {
+    "@shopify/react-native-skia@2.6.2": true,
     "fsevents@2.3.3": true
   }
 }

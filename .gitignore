@@ -2,6 +2,12 @@ node_modules/
 **/dist/
 *.tsbuildinfo
 
+apps/mobile/.expo/
+apps/mobile/android/
+apps/mobile/coverage/
+apps/mobile/expo-env.d.ts
+apps/mobile/ios/
+
 legacy-web/KaTeX/*
 legacy-web/Workbox/*
 legacy-web/workbox-*

@@ -14,6 +14,7 @@ typecheck:
 
 test:
     npm test
+    npm run test:mobile
 
 lab-sync:
     uv sync --project scripts/lab --locked

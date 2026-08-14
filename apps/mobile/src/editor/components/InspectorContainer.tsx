@@ -123,6 +123,8 @@ export function InspectorContainer({
   const initialOffset = compactOffsetForSnapPoint("half", height);
   const [compactOffset] = useState(() => new Animated.Value(initialOffset));
   const compactOffsetRef = useRef(initialOffset);
+  const dragActiveRef = useRef(false);
+  const dragDyRef = useRef(0);
   const dragStartOffsetRef = useRef(initialOffset);
   const compact = layoutClass === "compact";
   const inspectorCollapsed = compact && snapPoint === "collapsed";
@@ -162,6 +164,8 @@ export function InspectorContainer({
         dragStartOffsetRef.current + dy,
         height,
       );
+      dragActiveRef.current = false;
+      dragDyRef.current = 0;
       commitSnapPoint(nearestCompactSnapPoint(offset, height));
     },
     [commitSnapPoint],
@@ -173,9 +177,12 @@ export function InspectorContainer({
           Math.abs(gesture.dy) >= DRAG_ACTIVATION_DISTANCE &&
           Math.abs(gesture.dy) > Math.abs(gesture.dx),
         onPanResponderGrant: () => {
+          dragActiveRef.current = true;
+          dragDyRef.current = 0;
           dragStartOffsetRef.current = compactOffsetRef.current;
         },
         onPanResponderMove: (_, gesture) => {
+          dragDyRef.current = gesture.dy;
           setCompactOffset(
             boundedCompactOffset(
               dragStartOffsetRef.current + gesture.dy,
@@ -197,9 +204,18 @@ export function InspectorContainer({
         return;
       }
       sheetHeightRef.current = nextHeight;
-      setCompactOffset(
-        compactOffsetForSnapPoint(snapPointRef.current, nextHeight),
+      const snapOffset = compactOffsetForSnapPoint(
+        snapPointRef.current,
+        nextHeight,
       );
+      if (dragActiveRef.current) {
+        dragStartOffsetRef.current = snapOffset;
+        setCompactOffset(
+          boundedCompactOffset(snapOffset + dragDyRef.current, nextHeight),
+        );
+        return;
+      }
+      setCompactOffset(snapOffset);
     },
     [setCompactOffset],
   );

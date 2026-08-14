@@ -210,6 +210,42 @@ async function dragInspectorBy(dy: number, sheetHeight = 600) {
   return handle;
 }
 
+async function finishInspectorDragAcrossLayout(
+  completion: "onResponderRelease" | "onResponderTerminate",
+) {
+  const sheet = screen.getByTestId("editor-bottom-sheet");
+  const handle = screen.getByTestId("inspector-drag-handle");
+  const dragRegion = screen.queryByTestId("inspector-drag-region");
+  await fireEvent(sheet, "layout", {
+    nativeEvent: {
+      layout: { height: 600, width: 390, x: 0, y: 0 },
+    },
+  });
+
+  expect(dragRegion).not.toBeNull();
+  if (dragRegion === null) {
+    return handle;
+  }
+  expect(dragRegion.props.onResponderGrant).toEqual(expect.any(Function));
+  expect(dragRegion.props.onResponderMove).toEqual(expect.any(Function));
+  expect(dragRegion.props[completion]).toEqual(expect.any(Function));
+  const grant = responderEvent(500, 500, 1);
+  const upwardMove = responderEvent(500, 400, 2);
+  await act(async () => {
+    dragRegion.props.onResponderGrant(grant);
+    dragRegion.props.onResponderMove(upwardMove);
+  });
+  await fireEvent(sheet, "layout", {
+    nativeEvent: {
+      layout: { height: 300, width: 390, x: 0, y: 0 },
+    },
+  });
+  await act(async () => {
+    dragRegion.props[completion](upwardMove);
+  });
+  return handle;
+}
+
 describe("adaptive layout contract", () => {
   beforeEach(() => {
     jest.clearAllMocks();
@@ -376,6 +412,20 @@ describe("editor shell", () => {
     handle = await dragInspectorBy(10_000);
     expect(handle).toHaveAccessibilityValue({ text: "Collapsed" });
   });
+
+  it.each([
+    ["release", "onResponderRelease"],
+    ["termination", "onResponderTerminate"],
+  ] as const)(
+    "rebases an active upward drag across compact layout change on %s",
+    async (_, completion) => {
+      await renderEditor(390, 600);
+
+      const handle = await finishInspectorDragAcrossLayout(completion);
+
+      expect(handle).toHaveAccessibilityValue({ text: "Full height" });
+    },
+  );
 
   it("keeps large-font inspector state mounted but inaccessible and inert when collapsed", async () => {
     setWindow(390, 844, 3.2);

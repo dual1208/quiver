@@ -239,14 +239,20 @@ git commit -m "feat(core): define validated diagram model"
 - Create: `packages/core/test/commands/history.test.ts`
 - Create: `packages/core/test/commands/properties.test.ts`
 - Modify: `packages/core/src/index.ts`
+- Modify: root `package.json`
+- Modify: root `package-lock.json`
 
 **Interfaces:**
 - Consumes: validated `DiagramDocument` and entity types.
-- Produces: `DocumentCommand`, `CommandTransaction`, `applyCommand`, `invertCommand`, `HistoryState`, `createHistory(document, limit?)`, `commitTransaction`, `undo`, `redo`.
+- Produces: `DocumentCommand`, `CommandTransaction`, `CommandError`, `createRemoveEntitiesCommand`,
+  `applyCommand`, `invertCommand`, `HistoryState`, `createHistory(document, limit?)`,
+  `commitTransaction`, `undo`, `redo`.
 
 - [ ] **Step 1: Write failing example and property tests**
 
-Generate valid documents with fast-check. For every supported command `c`, assert:
+Install exact root dev dependency `fast-check@4.9.0` after the mobile workspace lockfile is integrated.
+Generate valid documents constructively with fixed seeds (no filtered invalid cases). For every supported
+command `c`, run at least 500 cases and assert:
 
 ```ts
 const changed = applyCommand(document, c);
@@ -275,6 +281,11 @@ export interface CommandTransaction {
 - [ ] **Step 3: Implement pure application, inversion, cascade deletion, and history**
 
 Removing a vertex also removes every transitive dependent edge and records them in document order.
+`createRemoveEntitiesCommand(document, ids)` is the one public cascade producer. Because the locked
+`remove-entities` payload does not carry original array indices, `invertCommand(document, removeCommand)`
+returns an exact `replace-document` inverse from the changed document back to `document`; it never guesses
+insertion order. History entries retain precomputed forward and inverse transactions. Undo/redo are merge
+barriers so a new same-key edit cannot merge across a timeline change.
 Applying a command validates its preconditions and throws `CommandError` with codes `entity-exists`,
 `entity-missing`, `position-occupied`, or `invalid-result`. History functions return new values and never
 mutate prior documents or stacks.

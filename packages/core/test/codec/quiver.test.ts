@@ -33,6 +33,9 @@ const FIXTURE_NAMES = [
   "styles",
 ] as const;
 const PROPERTY_RUNS = 500;
+const TEST_MAX_WIRE_CELLS = 50_000;
+const TEST_MAX_PAYLOAD_BYTES = 5 * 1024 * 1024;
+const EMPTY_SINGLE_LABEL_WIRE_BYTES = 14;
 
 interface UpstreamFixture {
   readonly sourceUrl: string;
@@ -129,6 +132,30 @@ function decodeSuccess(
     throw new Error(`Expected decode success: ${result.diagnostics[0]?.code}`);
   }
   return result;
+}
+
+function captureDocumentValidationError(
+  action: () => unknown,
+): DocumentValidationError {
+  try {
+    action();
+  } catch (error) {
+    expect(error).toBeInstanceOf(DocumentValidationError);
+    return error as DocumentValidationError;
+  }
+  throw new Error("Expected a DocumentValidationError");
+}
+
+function limitVertices(count: number, prefix: string): readonly Vertex[] {
+  return Array.from({ length: count }, (_, index) =>
+    vertex(`${prefix}-${index}`, index, 0),
+  );
+}
+
+function payloadBoundaryLabel(extraBytes = 0): string {
+  return "x".repeat(
+    TEST_MAX_PAYLOAD_BYTES - EMPTY_SINGLE_LABEL_WIRE_BYTES + extraBytes,
+  );
 }
 
 function entitySemantics(source: DiagramDocument): unknown {
@@ -798,6 +825,194 @@ describe("Quiver encoder wire domain", () => {
     expect(decoded.diagnostics).toEqual([]);
     expect(decoded.document.vertices).toEqual([]);
     expect(decoded.document.edges).toEqual([]);
+  });
+
+  it("accepts exactly 50,000 cells in a full payload", () => {
+    const source = document(
+      limitVertices(TEST_MAX_WIRE_CELLS, "v-full-cell-limit"),
+    );
+
+    const decoded = decodeSuccess(
+      encodeQuiverPayload(source),
+      "full-cell-limit",
+    );
+
+    expect(decoded.diagnostics).toEqual([]);
+    expect(decoded.document.vertices).toHaveLength(TEST_MAX_WIRE_CELLS);
+    expect(decoded.document.edges).toEqual([]);
+  });
+
+  it("rejects 50,001 cells in a full payload without mutating the document", () => {
+    const source = document(
+      limitVertices(TEST_MAX_WIRE_CELLS + 1, "v-full-cell-overflow"),
+    );
+    const before = structuredClone(source);
+
+    const error = captureDocumentValidationError(() =>
+      encodeQuiverPayload(source),
+    );
+
+    expect(error.diagnostics).toEqual([
+      {
+        code: "quiver-cell-limit",
+        message: "Quiver v0 export has 50001 cells; maximum is 50000",
+        path: "wire.cells",
+      },
+    ]);
+    expect(source).toEqual(before);
+  });
+
+  it("accepts a selection whose endpoint closure is exactly 50,000 cells", () => {
+    const vertices = limitVertices(
+      TEST_MAX_WIRE_CELLS,
+      "v-selection-cell-limit",
+    );
+    const closureEdge = edge(
+      "e-selection-cell-limit",
+      vertices[TEST_MAX_WIRE_CELLS - 2]!.id,
+      vertices[TEST_MAX_WIRE_CELLS - 1]!.id,
+    );
+    const source = document(vertices, [closureEdge]);
+    const selectedIds = [
+      ...vertices.slice(0, TEST_MAX_WIRE_CELLS - 3).map(({ id }) => id),
+      closureEdge.id,
+    ];
+
+    const encoded = encodeQuiverSelection(source, selectedIds);
+    const decoded = decodeSuccess(encoded.payload, "selection-cell-limit");
+
+    expect(encoded.selectedWireIndices).toHaveLength(TEST_MAX_WIRE_CELLS - 2);
+    expect(decoded.diagnostics).toEqual([]);
+    expect(decoded.document.vertices).toHaveLength(TEST_MAX_WIRE_CELLS - 1);
+    expect(decoded.document.edges).toHaveLength(1);
+  });
+
+  it("rejects a selection whose endpoint closure has 50,001 cells without mutation", () => {
+    const vertices = limitVertices(
+      TEST_MAX_WIRE_CELLS,
+      "v-selection-cell-overflow",
+    );
+    const closureEdge = edge(
+      "e-selection-cell-overflow",
+      vertices[TEST_MAX_WIRE_CELLS - 2]!.id,
+      vertices[TEST_MAX_WIRE_CELLS - 1]!.id,
+    );
+    const source = document(vertices, [closureEdge]);
+    const selectedIds = [
+      ...vertices.slice(0, TEST_MAX_WIRE_CELLS - 2).map(({ id }) => id),
+      closureEdge.id,
+    ];
+    const beforeDocument = structuredClone(source);
+    const beforeIds = [...selectedIds];
+
+    const error = captureDocumentValidationError(() =>
+      encodeQuiverSelection(source, selectedIds),
+    );
+
+    expect(error.diagnostics).toEqual([
+      {
+        code: "quiver-cell-limit",
+        message: "Quiver v0 export has 50001 cells; maximum is 50000",
+        path: "wire.cells",
+      },
+    ]);
+    expect(source).toEqual(beforeDocument);
+    expect(selectedIds).toEqual(beforeIds);
+  });
+
+  it("accepts a full payload of exactly 5 MiB decoded JSON", () => {
+    const label = payloadBoundaryLabel();
+    const source = document([vertex("v-full-byte-limit", 0, 0, label)]);
+
+    const payload = encodeQuiverPayload(source);
+    const decoded = decodeSuccess(payload, "full-byte-limit");
+
+    expect(Buffer.from(payload, "base64")).toHaveLength(TEST_MAX_PAYLOAD_BYTES);
+    expect(decoded.diagnostics).toEqual([]);
+    expect(decoded.document.vertices[0]?.label).toBe(label);
+  });
+
+  it("rejects a full payload one byte above 5 MiB without mutation", () => {
+    const source = document([
+      vertex("v-full-byte-overflow", 0, 0, payloadBoundaryLabel(1)),
+    ]);
+    const before = structuredClone(source);
+
+    const error = captureDocumentValidationError(() =>
+      encodeQuiverPayload(source),
+    );
+
+    expect(error.diagnostics).toEqual([
+      {
+        code: "quiver-payload-too-large",
+        message: "Quiver v0 export is 5242881 bytes; maximum is 5242880",
+        path: "wire.payload",
+      },
+    ]);
+    expect(source).toEqual(before);
+  });
+
+  it("accepts a selected payload of exactly 5 MiB decoded JSON", () => {
+    const label = payloadBoundaryLabel();
+    const ignored = vertex("v-selection-byte-ignored", 0, 0, "ignored");
+    const selected = vertex("v-selection-byte-limit", 1, 0, label);
+    const source = document([ignored, selected]);
+
+    const encoded = encodeQuiverSelection(source, [selected.id]);
+    const decoded = decodeSuccess(encoded.payload, "selection-byte-limit");
+
+    expect(Buffer.from(encoded.payload, "base64")).toHaveLength(
+      TEST_MAX_PAYLOAD_BYTES,
+    );
+    expect(encoded.selectedWireIndices).toEqual([0]);
+    expect(decoded.diagnostics).toEqual([]);
+    expect(decoded.document.vertices[0]?.label).toBe(label);
+  });
+
+  it("rejects a selected payload one byte above 5 MiB without mutation", () => {
+    const ignored = vertex("v-selection-byte-ignored", 0, 0, "ignored");
+    const selected = vertex(
+      "v-selection-byte-overflow",
+      1,
+      0,
+      payloadBoundaryLabel(1),
+    );
+    const source = document([ignored, selected]);
+    const selectedIds = [selected.id];
+    const beforeDocument = structuredClone(source);
+    const beforeIds = [...selectedIds];
+
+    const error = captureDocumentValidationError(() =>
+      encodeQuiverSelection(source, selectedIds),
+    );
+
+    expect(error.diagnostics).toEqual([
+      {
+        code: "quiver-payload-too-large",
+        message: "Quiver v0 export is 5242881 bytes; maximum is 5242880",
+        path: "wire.payload",
+      },
+    ]);
+    expect(source).toEqual(beforeDocument);
+    expect(selectedIds).toEqual(beforeIds);
+  });
+
+  it("rejects formatting a payload above 5 MiB through the shared guard", () => {
+    const source = document([
+      vertex("v-format-byte-overflow", 0, 0, payloadBoundaryLabel(1)),
+    ]);
+    const before = structuredClone(source);
+
+    const error = captureDocumentValidationError(() => formatQuiverUrl(source));
+
+    expect(error.diagnostics).toEqual([
+      {
+        code: "quiver-payload-too-large",
+        message: "Quiver v0 export is 5242881 bytes; maximum is 5242880",
+        path: "wire.payload",
+      },
+    ]);
+    expect(source).toEqual(before);
   });
 
   it("accepts inclusive v0 boundaries and always emits a cleanly decodable payload", () => {

@@ -1266,6 +1266,15 @@ function encodeIncluded(
   included: ReadonlySet<EntityId>,
   selected: ReadonlySet<EntityId>,
 ): EncodedQuiverSelection {
+  if (included.size > MAX_WIRE_CELLS) {
+    throw new DocumentValidationError([
+      Object.freeze({
+        code: "quiver-cell-limit",
+        message: `Quiver v0 export has ${included.size} cells; maximum is ${MAX_WIRE_CELLS}`,
+        path: "wire.cells",
+      }),
+    ]);
+  }
   const levels = deriveLevels(document);
   const [vertices, edges] = orderedSelection(document, included, levels);
   let minimumX = Number.POSITIVE_INFINITY;
@@ -1337,7 +1346,17 @@ function encodeIncluded(
     .map(([, index]) => index)
     .sort((left, right) => left - right);
   const json = JSON.stringify([0, vertices.length, ...cells]);
-  const payload = encodeStandardBase64(new TextEncoder().encode(json));
+  const bytes = new TextEncoder().encode(json);
+  if (bytes.length > MAX_PAYLOAD_BYTES) {
+    throw new DocumentValidationError([
+      Object.freeze({
+        code: "quiver-payload-too-large",
+        message: `Quiver v0 export is ${bytes.length} bytes; maximum is ${MAX_PAYLOAD_BYTES}`,
+        path: "wire.payload",
+      }),
+    ]);
+  }
+  const payload = encodeStandardBase64(bytes);
   return {
     payload,
     selectedWireIndices: Object.freeze(selectedWireIndices),

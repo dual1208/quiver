@@ -312,60 +312,82 @@ git commit -m "feat(core): add reversible editor commands"
 - Create: `packages/test-fixtures/upstream/adjunction.json`
 - Create: `packages/test-fixtures/upstream/higher-cell.json`
 - Create: `packages/test-fixtures/upstream/styles.json`
+- Modify: `packages/core/src/model/types.ts`
+- Modify: `packages/core/src/model/defaults.ts`
+- Modify: `packages/core/src/model/validate.ts`
+- Modify: `packages/core/test/model/validate.test.ts`
 - Modify: `packages/core/src/index.ts`
 
 **Interfaces:**
 - Consumes: model defaults, `assertValidDocument`, injected `IdFactory`.
-- Produces: `decodeQuiverPayload(payload, options): DecodeResult`, `encodeQuiverPayload(document): string`, `encodeQuiverSelection(document, ids): string`, `parseQuiverUrl(text): QuiverLink`, `formatQuiverUrl(document, options): string`.
+- Produces: `decodeQuiverPayload(payload, options): DecodeResult`, `encodeQuiverPayload(document): string`,
+  `encodeQuiverSelection(document, ids): EncodedQuiverSelection`, `parseQuiverUrl(text): QuiverLink`,
+  `formatQuiverUrl(document, options): string`.
 
 - [ ] **Step 1: Extract and lock upstream fixtures**
 
-Copy the encoded payloads from the README screenshot links into fixture JSON alongside their expected
-vertex/edge counts and selected labels. Tests must decode all four and re-encode to a semantically equal
-document.
+Copy the exact encoded payloads from the four README links into fixture JSON alongside the source URL,
+expected vertex/edge counts, and selected labels. The fixtures are `pullback` (5 vertices/8 edges),
+`adjunction` (2/3), `higher-cell` (4/11), and `styles` (16/9); do not regenerate their payloads from decoded
+JSON. Tests must decode all four and re-encode to a semantically equal document.
 
 - [ ] **Step 2: Write failing UTF-8, legacy, and malformed-input tests**
 
-Cover `\\alpha`, emoji, Japanese text, a payload containing legacy `length`, a payload containing
-`style.body.level`, truncated arrays, invalid indices, duplicate positions, prototype-shaped keys, input
-over 5 MB, and nesting over 64. Assert diagnostics contain a code and cell index.
+Cover `\\alpha`, emoji, Japanese text, unpadded base64, a raw `+` in a URL payload, query-over-fragment
+precedence, a payload containing legacy `length`, a payload containing `style.body.level`, explicit visual
+level precedence, special style names, endpoint alignment, truncated arrays, forward/self/invalid indices,
+duplicate positions, safe-integer overflow, prototype-shaped keys, invalid UTF-8, input over 5 MB, and
+nesting over 64. Assert diagnostics contain a stable code and original wire cell index.
 
 - [ ] **Step 3: Implement byte-safe base64 and URL parsing**
 
-```ts
-export function encodeUtf8Base64(value: unknown): string {
-  const json = JSON.stringify(value);
-  const bytes = new TextEncoder().encode(json);
-  let binary = "";
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return btoa(binary);
-}
-```
-
-Provide the inverse using `atob`, `Uint8Array`, `TextDecoder("utf-8", { fatal: true })`, and a JSON
-reviver that creates null-prototype option records. React Native's base64 polyfill is supplied by the app;
-the core tests install the same standards-compatible global.
+Implement byte-to-base64 and base64-to-byte loops inside core using the standard alphabet; do not rely on
+Node `Buffer`, spread a multi-megabyte byte array into `String.fromCharCode`, or require ambient
+`btoa`/`atob` globals. Encode/decode JSON with `TextEncoder` and
+`TextDecoder("utf-8", { fatal: true })`. Pre-scan JSON text for nesting depth before `JSON.parse`, then
+extract known keys into null-prototype option records using `Object.hasOwn`. Parse `q` from raw query and
+fragment text so `+` is never converted to space; fragment parameters are read first and query parameters
+override duplicates. Accept padded or valid unpadded standard base64.
 
 - [ ] **Step 4: Implement exact v0 array defaults and migrations**
 
-Vertices are emitted first in stored order; edges follow in ascending derived level and stored order.
-Positions are translated so the minimum selected vertex coordinate is `(0,0)`. Trailing default array
-members are omitted exactly as upstream. Import converts `length` to symmetric `shorten` unless an
-explicit `shorten` exists, and moves legacy `style.body.level` into derived dependency validation.
-`encodeQuiverSelection` includes the transitive endpoint dependencies needed to paste selected edges,
-preserves selected entities as a separate returned ID list, and translates pasted vertices by an explicit
-origin supplied to `decodeQuiverPayload` so collision handling remains a caller decision.
+The exact wire grammar is `[0, vertexCount, ...vertices, ...edges]`, with vertices
+`[x, y, label?, labelColour?]` and edges
+`[sourceIndex, targetIndex, label?, alignment?, options?, labelColour?]`. Combined-array endpoint indices
+must reference earlier wire cells. Vertices are emitted first in stored order; edges follow in ascending
+derived structural level and stored order. Positions are translated so the minimum included vertex
+coordinate is `(0,0)`. Trailing default array members are omitted exactly as upstream; blank-label
+alignment and label colour are semantically irrelevant and omitted.
+
+First extend the canonical edge model so the fixtures round-trip without loss: Quiver's wire defaults use
+`radius: 3`, `edgeAlignment: { source: true, target: true }`, and outer `style.name: "arrow"`. Preserve a
+nullable explicit visual `level` override separately from the structurally derived dependency level, and
+preserve special outer style names including `adjunction`, `corner`, and `corner-inverse`. Validation must
+bound visual levels and validate endpoint alignment/style records without conflating them with graph
+level. Import precedence is explicit `options.level`, then legacy `style.body.level`, then the derived
+structural level. Import validates and converts legacy `length` to symmetric `shorten` only when explicit
+`shorten` is absent. Encoding computes its option delta against the edge's derived wire defaults, never
+emits `shape`, omits radius/angle for Bézier and curve for arc, and never mutates the document.
+
+`encodeQuiverSelection` includes the transitive endpoint closure and returns
+`{ payload, selectedWireIndices }`, because v0 has no selection marker and a payload alone cannot
+distinguish originally selected cells from included dependencies. Decoder results retain a stable
+wire-index-to-created-ID mapping so callers can recover that selection. An explicit decode origin is added
+only to vertex coordinates; collision probing remains a caller decision. Malformed skipped cells retain
+their wire slots so later indices can never be silently redirected.
 
 - [ ] **Step 5: Verify compatibility**
 
 Run: `npm test -w @quiver/core -- test/codec/quiver.test.ts`  
-Expected: all upstream fixtures decode, encode, and re-decode with semantic equality; malformed cases
-return typed diagnostics without mutation or code execution.
+Expected: all upstream fixtures decode, encode, and re-decode with semantic equality; empty documents
+format as the bare canonical `https://q.uiver.app/` URL; malformed cases return typed diagnostics without
+mutation or code execution. Formatting uses `https://q.uiver.app/#q=...`, omits the default KaTeX renderer,
+and preserves `r=typst`/encoded `macro_url` metadata without fetching it.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add packages/core/src/codec packages/core/src/index.ts packages/core/test/codec packages/test-fixtures/upstream
+git add packages/core/src/codec packages/core/src/model packages/core/src/index.ts packages/core/test/model packages/core/test/codec packages/test-fixtures/upstream
 git commit -m "feat(core): preserve Quiver link compatibility"
 ```
 

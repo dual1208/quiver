@@ -6,7 +6,7 @@
 
 **Architecture:** A typed Python `quiver-lab` CLI owns device discovery, subprocess execution, locking, artifacts, and result manifests. Thin `just` recipes and GitHub workflows invoke the same CLI. Android UI smoke uses Maestro over ADB; Apple UI smoke uses a standalone XCUITest bundle on physical devices. Exact device identifiers come from a gitignored local inventory.
 
-**Tech Stack:** Python 3.13 via `uv`, pytest, GitHub Actions self-hosted ARM64 runner as a user launchd service, Xcode 26.6/`xcodebuild`/`devicectl`, CocoaPods 1.16.2, XcodeGen, Android SDK/Gradle/JDK 17, ADB, Maestro 2.8, `gh`, `jq`, `just`.
+**Tech Stack:** Python 3.13 via `uv`, pytest, GitHub Actions self-hosted ARM64 runner as a user launchd service, Xcode 26.6/`xcodebuild`/`devicectl`, CocoaPods 1.17.0, XcodeGen, Android SDK/Gradle/JDK 17, ADB, Maestro 2.8, `gh`, `jq`, `just`.
 
 ## Global Constraints
 
@@ -405,7 +405,7 @@ git commit -m "ci: add hosted and protected device workflows"
 - [ ] **Step 1: Implement idempotent prerequisite audit**
 
 Audit exact commands/versions and install only missing packages explicitly required by the plans:
-`cocoapods` 1.16.x, `xcodegen`, `xcbeautify`, `actionlint`, `uv`, `openjdk@17`, Android SDK tools, Maestro,
+`cocoapods` 1.17.x, `xcodegen`, `xcbeautify`, `actionlint`, `uv`, `openjdk@17`, Android SDK tools, Maestro,
 Node 22+, Xcode 26.6, `gh`, `jq`, and `just`. Validate Xcode license/first launch, one codesigning identity
 for team `HPNQ87SHMK`, Android SDK licenses, local inventory permissions `0600`, and available disk above
 30 GB. The script supports `--audit` (no changes) and `--install` (Homebrew changes), with no password or
@@ -496,4 +496,3 @@ Redact full personal device names from committed prose while retaining configure
 git add docs/verification/latest-device-matrix.md
 git commit -m "docs: record four-device product verification"
 ```
-

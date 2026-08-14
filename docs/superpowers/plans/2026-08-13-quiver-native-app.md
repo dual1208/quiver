@@ -123,7 +123,7 @@ npx expo-doctor@latest apps/mobile
 ```
 
 Expected: boot test and typecheck pass; `ios/` and `android/` generate with the exact identifiers and no
-Expo Doctor dependency error other than the separately-audited missing CocoaPods prerequisite. Verify both
+Expo Doctor dependency error. CocoaPods is a separately-audited Mac mini prerequisite. Verify both
 production and lab prebuilds keep `Quiver.xcodeproj`/`Quiver.xcscheme`, generated New Architecture on,
 correct platform floors/permissions, and only the display name difference. Generated native directories
 remain ignored and reproducible. Add the reviewed Skia install script to root npm `allowScripts` at the

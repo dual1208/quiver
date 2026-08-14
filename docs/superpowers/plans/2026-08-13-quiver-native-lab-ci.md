@@ -215,26 +215,37 @@ git commit -m "build(lab): verify Android physical devices"
 **Files:**
 - Create: `scripts/lab/src/quiver_lab/apple.py`
 - Create: `scripts/lab/tests/test_apple.py`
+- Create: `apps/mobile/Podfile.lock`
 - Create: `device-tests/ios/project.yml`
 - Create: `device-tests/ios/QuiverSmokeTests.swift`
+- Modify: `scripts/lab/src/quiver_lab/inventory.py`
+- Modify: `scripts/lab/tests/test_inventory.py`
 - Modify: `scripts/lab/src/quiver_lab/cli.py`
 - Modify: `justfile`
 
 **Interfaces:**
-- Consumes: Apple team/codesigning identity, CocoaPods, XcodeGen, generated iOS project, CoreDevice IDs.
+- Consumes: Apple team/codesigning identity, CocoaPods, XcodeGen, generated iOS project, paired CoreDevice
+  UUIDs plus the guarded physical records' hardware UDIDs.
 - Produces: `quiver-lab apple build|install|smoke|all --device <alias>`, signed standalone `.app`, `.xcresult`, screenshots.
 
 - [ ] **Step 1: Write failing signing/destination/guard tests**
 
-Assert build verifies one valid Apple Development identity containing team `HPNQ87SHMK`, uses
-`generic/platform=iOS` for the shared app build, exact CoreDevice ID for install/launch/test destination,
-passes `-allowProvisioningUpdates -allowProvisioningDeviceRegistration`, never selects an iOS Simulator,
-and refuses paired/offline/model-mismatched devices.
+Assert build verifies exactly one valid Apple Development identity containing team `HPNQ87SHMK` without
+logging identity text and uses `generic/platform=iOS` for the shared app build. Extend inventory parsing to
+retain each CoreDevice record's `hardwareProperties.udid`, `reality`, developer-mode state, DDI availability,
+lock state, pairing, and tunnel connection. Every device action must first require the exact configured
+alias/platform/CoreDevice UUID/model, physical reality, connected tunnel, pairing, unlocked state, enabled
+developer mode, and available DDI services. Use the CoreDevice UUID only for `devicectl`; use the same
+guarded record's hardware UDID only for physical `xcodebuild -destination`, redact it from logs, and never
+substitute a simulator or another physical device.
 
 - [ ] **Step 2: Implement clean prebuild and signed standalone app build**
 
-Run math assets, `expo prebuild --clean --platform ios`, `pod install --repo-update` only when lock resolution
-requires it, then:
+Run math assets and `APP_VARIANT=lab expo prebuild --clean --platform ios --no-install`. Restore the
+committed canonical `apps/mobile/Podfile.lock` into the generated `ios` directory and run
+`pod install --deployment`; any resolution that would modify the lock fails review instead of silently
+updating it. Preserve `APP_VARIANT=lab` through the native build so the embedded app exposes
+`extra.labSmoke=true`, then:
 
 ```text
 xcodebuild -workspace apps/mobile/ios/Quiver.xcworkspace -scheme Quiver \
@@ -244,25 +255,42 @@ xcodebuild -workspace apps/mobile/ios/Quiver.xcworkspace -scheme Quiver \
   -allowProvisioningUpdates -allowProvisioningDeviceRegistration build
 ```
 
-Capture the real scheme/workspace names from `xcodebuild -list -json` after prebuild and reject an
-unexpected value rather than guessing. Verify the `.app` with `codesign --verify --deep --strict`, inspect
-entitlements and embedded provisioning profile without logging certificate/private data, hash the full
-bundle deterministically from sorted file hashes, and record `CFBundleIdentifier/Version`.
+Require exactly one top-level `Quiver.xcworkspace`, then require workspace name `Quiver` and scheme
+`Quiver` from `xcodebuild -workspace ... -list -json`; extra Pod schemes are allowed. Resolve the built app
+from `xcodebuild -showBuildSettings -json` using `TARGET_BUILD_DIR` plus `WRAPPER_NAME`, never a guessed
+path. A generic shared build is accepted only if its decoded development profile already contains both
+configured physical hardware UDIDs; provisioning registration cannot be deferred to a generic destination.
+
+Verify the `.app` with `codesign --verify --deep --strict`. Decode entitlements and
+`embedded.mobileprovision` only in mode-0600 temporary files; validate identifier/team relationships,
+expiry, `get-task-allow`, and target-device coverage, but retain no raw entitlements, certificate data,
+profile UUID/name, or UDID. Hash the final signed bundle from sorted relative paths plus entry type,
+executable mode, symlink target, size, and file bytes, including `_CodeSignature` and the profile. The hash
+proves one artifact reused across devices; it is not claimed reproducible across separately signed builds.
 
 - [ ] **Step 3: Implement CoreDevice installation and launch**
 
-Use `devicectl device install app --device ID APP --json-output result.json`, parse its JSON success, verify
-installed application metadata, then launch with `devicectl device process launch --terminate-existing
---device ID app.quiver.native --json-output launch.json`. Save bounded console/system logs; do not attach an
-interactive debugger.
+Use `devicectl device install app --device CORE_UUID --quiet --timeout 120 --json-output result.json APP`,
+then separately verify the installed version with `devicectl device info apps --device CORE_UUID
+--include-all-apps --bundle-id app.quiver.native --json-output apps.json`. Launch with
+`devicectl device process launch --terminate-existing --activate --device CORE_UUID --quiet --timeout 30
+--json-output launch.json app.quiver.native`; the bundle identifier must be the final argument so later
+options cannot become app arguments. Parse the Xcode 26 version-3 envelope, requiring successful
+`info.outcome`/expected `info.commandType` and object `result`; app queries use `result.apps` and process
+queries use `result.runningProcesses`. Treat raw JSON as secure temporary input and retain only allowlisted,
+redacted summaries. Save bounded console/system logs; do not attach an interactive debugger.
 
 - [ ] **Step 4: Define the standalone physical XCUITest bundle**
 
-`project.yml` generates an iOS UI testing bundle `QuiverSmokeTests` with bundle ID
-`app.quiver.native.smoke-tests`, iOS 16.4 deployment, automatic signing/team `HPNQ87SHMK`, and XCTest only.
-The Swift test launches the already-installed app by bundle identifier, performs the same library → new
-document → two labelled vertices → edge → undo/redo → export → terminate/relaunch flow, waits with
-predicates rather than sleeps, and attaches `XCUIScreen.main.screenshot()` at each major stage.
+`project.yml` generates a standalone `bundle.ui-testing` target `QuiverSmokeTests` with bundle ID
+`app.quiver.native.smoke-tests`, iOS 16.4, `USES_XCTRUNNER=YES`, `SUPPORTED_PLATFORMS=iphoneos`, device
+families 1/2, generated Info.plist, no `TEST_TARGET_NAME`, and no Quiver target dependency. Supply signing
+team/style only through local `xcodebuild` overrides, never committed YAML. The Swift test launches the
+already-installed app by bundle identifier with an app-owned deterministic lab-reset launch argument,
+performs the same library → new document → two labelled vertices → edge → undo/redo → export →
+terminate/relaunch flow, waits with predicates rather than sleeps, and attaches
+`XCUIScreen.main.screenshot()` at each major stage. Do not replace missing accessibility actions with
+coordinate or text fallbacks.
 
 Core launch snippet:
 
@@ -274,19 +302,25 @@ XCTAssertTrue(app.otherElements["library-screen"].waitForExistence(timeout: 15))
 
 - [ ] **Step 5: Build/run UI tests on each exact physical destination**
 
-Generate with `xcodegen generate --spec device-tests/ios/project.yml`, then run `xcodebuild test` with
-`-destination id=ID`, unique `-resultBundlePath`, automatic signing flags, and `-only-testing:QuiverSmokeTests`.
-Parse `.xcresult` via `xcresulttool` to require zero failures and export attachments into the device
-artifact directory.
+Generate with `xcodegen generate --spec device-tests/ios/project.yml`, then run the generated project with
+the guarded hardware destination, unique derived/result paths, automatic signing overrides,
+`-parallel-testing-enabled NO`, bounded test timeouts, and `-only-testing:QuiverSmokeTests`. Parse
+`xcresulttool get test-results summary`, requiring `result == "Passed"`, zero failures, at least one passed
+test, and the expected guarded physical destination; fixture the actual Xcode 26.6 array-shaped
+`devicesAndConfigurations`/`testFailures` output. Export attachments with `xcresulttool export attachments`
+and bounded console logs with `xcresulttool get log --type console`.
 
 - [ ] **Step 6: Verify reachable iPad and commit**
 
 Run: `uv run --project scripts/lab quiver-lab apple all --device ipad`  
-Expected: signed app installs and launches on the iPad, physical XCUITest passes, and `.xcresult` plus
-screenshots are retained.
+Expected after the app exposes `new-document`, `editor-canvas`, `canvas-create-vertex`,
+`connect-selection`, `undo`, `redo`, `share-export`, and the lab-reset launch contract: the signed lab app
+installs and launches on the iPad, physical XCUITest passes, and `.xcresult` plus screenshots are retained.
+Until those action IDs exist, unit/injected tests and read-only tool resolution must pass, but full live
+XCUITest acceptance remains explicitly deferred rather than replaced with a weaker smoke flow.
 
 ```bash
-git add scripts/lab/src/quiver_lab/apple.py scripts/lab/tests/test_apple.py scripts/lab/src/quiver_lab/cli.py device-tests/ios justfile
+git add apps/mobile/Podfile.lock scripts/lab/src/quiver_lab/apple.py scripts/lab/src/quiver_lab/inventory.py scripts/lab/tests/test_apple.py scripts/lab/tests/test_inventory.py scripts/lab/src/quiver_lab/cli.py device-tests/ios justfile
 git commit -m "build(lab): verify Apple physical devices"
 ```
 

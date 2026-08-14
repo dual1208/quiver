@@ -6,7 +6,7 @@
 
 **Architecture:** An Expo SDK 57 app orchestrates `@quiver/core`, a small Zustand session store, SQLite document persistence, and `@quiver/renderer`. Skia owns diagram pixels; React Native owns chrome, text input, accessibility overlays, and platform effects. Gesture previews use Reanimated shared values and commit one core transaction on release.
 
-**Tech Stack:** Expo SDK 57.0.12, React Native 0.86, React 19.2, Expo Router, TypeScript strict mode, Hermes/New Architecture, React Native Skia 2.11, Gesture Handler 3.2, Reanimated 4.5, Zustand 5, Expo SQLite, React Native WebView, bundled MathJax, Jest Expo, React Native Testing Library.
+**Tech Stack:** Expo SDK 57.0.12, React Native 0.86.2, React 19.2.3, Expo Router, TypeScript strict mode, Hermes/New Architecture, Expo-compatible React Native Skia 2.6.2, Gesture Handler 2.32.0, Reanimated 4.5.1, Zustand 5, Expo SQLite, React Native WebView, bundled MathJax, Jest Expo, React Native Testing Library 14.
 
 ## Global Constraints
 
@@ -75,7 +75,7 @@ npx create-expo-app@latest quiver-mobile-seed --template default@sdk-57
 npx expo install expo-router expo-sqlite expo-file-system expo-sharing expo-clipboard expo-haptics \
   expo-document-picker expo-status-bar react-native-safe-area-context react-native-screens \
   react-native-webview react-native-gesture-handler react-native-reanimated \
-  @shopify/react-native-skia
+  @shopify/react-native-skia expo-build-properties
 npm install zustand@5.0.15
 ```
 
@@ -89,8 +89,8 @@ accounted for.
 import { render, screen } from "@testing-library/react-native";
 import LibraryRoute from "../app/index";
 
-it("opens the document library", () => {
-  render(<LibraryRoute />);
+it("opens the document library", async () => {
+  await render(<LibraryRoute />);
   expect(screen.getByTestId("library-screen")).toBeOnTheScreen();
   expect(screen.getByText("Quiver")).toBeOnTheScreen();
 });
@@ -98,11 +98,17 @@ it("opens the document library", () => {
 
 - [ ] **Step 3: Configure the app and root providers**
 
-`app.config.ts` sets name `Quiver`, slug `quiver-native`, scheme `quiver`, both identifiers
-`app.quiver.native`, iPad support, all orientations, iOS deployment target `16.4`, Android min SDK `24`,
-New Architecture enabled, and no permissions beyond defaults. An explicit `APP_VARIANT=lab` adds the
-display suffix `Lab` and compile-time `extra.labSmoke=true` while retaining `app.quiver.native` so the
-physical test drivers exercise the final installed identity; other variants set it false. `_layout.tsx` wraps the stack in
+`app.config.ts` keeps internal `name: "Quiver"` in every variant, sets slug `quiver-native`, scheme
+`quiver`, both identifiers `app.quiver.native`, `orientation: "default"`, and iPad support. The
+`expo-build-properties` plugin sets iOS deployment target `16.4` and Android min SDK `24`. Do not set
+`newArchEnabled`: React Native 0.86 is New-Architecture-only and Expo's generated project owns that flag.
+Explicit Android permissions are `INTERNET` (only for user-initiated macro import) and `VIBRATE`; block
+inherited `READ_EXTERNAL_STORAGE`, `WRITE_EXTERNAL_STORAGE`, and `SYSTEM_ALERT_WINDOW` because documents
+use the system picker/app storage and the release needs no overlay permission. An explicit
+`APP_VARIANT=lab` changes only the iOS `CFBundleDisplayName` and Android `app_name` to `Quiver Lab` with a
+typed config mod, and sets compile-time `extra.labSmoke=true`; it retains internal name, scheme, generated
+`Quiver` workspace/scheme, and `app.quiver.native` so physical drivers exercise the final identity. Other
+variants set it false. `_layout.tsx` wraps the stack in
 `GestureHandlerRootView`, `SafeAreaProvider`, theme provider, and repository provider.
 
 - [ ] **Step 4: Verify JavaScript and native generation**
@@ -117,7 +123,11 @@ npx expo-doctor@latest apps/mobile
 ```
 
 Expected: boot test and typecheck pass; `ios/` and `android/` generate with the exact identifiers and no
-Expo Doctor dependency error. Generated native directories remain ignored and reproducible.
+Expo Doctor dependency error other than the separately-audited missing CocoaPods prerequisite. Verify both
+production and lab prebuilds keep `Quiver.xcodeproj`/`Quiver.xcscheme`, generated New Architecture on,
+correct platform floors/permissions, and only the display name difference. Generated native directories
+remain ignored and reproducible. Add the reviewed Skia install script to root npm `allowScripts` at the
+exact locked version; do not enable arbitrary dependency scripts.
 
 - [ ] **Step 5: Commit**
 
@@ -476,8 +486,9 @@ and optional final transactions. The pure coordinator never imports Gesture Hand
 
 - [ ] **Step 3: Implement UI-thread recognizers and arbitration**
 
-Use RNGH 3 hook APIs: simultaneous pan+pinch for two contacts, competing tap/double-tap/long-press and
-one-contact pan, manual activation based on hit/port. Rebase focal translation when contact count changes.
+Use Gesture Handler 2.32's declarative API: simultaneous `Gesture.Pan()` + `Gesture.Pinch()` for two
+contacts, `Gesture.Exclusive`/`Gesture.Race` for tap/double-tap/long-press and one-contact pan, and a manual
+gesture for activation based on hit/port. Rebase focal translation when contact count changes.
 Clamp 0.18x–4x with rubber-band preview and Reanimated spring back. Call JS only for final transaction,
 selection, context menu, and accessibility announcement.
 

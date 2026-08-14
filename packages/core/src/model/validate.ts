@@ -5,17 +5,42 @@ import type {
   EntityId,
   Hsla,
   ValidationDiagnostic,
+  Vertex,
 } from "./types";
 
 const MAX_ENTITY_LEVEL = 4;
 
 type VisitMark = "white" | "grey" | "black";
 type ReportDiagnostic = (
-  entity: DiagramEntity,
+  occurrence: EntityOccurrence,
   code: string,
   message: string,
   path: string,
 ) => void;
+
+interface EntityOccurrenceBase<T extends DiagramEntity> {
+  readonly entity: T;
+  readonly entityOrder: number;
+  readonly path: string;
+}
+
+type VertexOccurrence = EntityOccurrenceBase<Vertex>;
+type EdgeOccurrence = EntityOccurrenceBase<Edge>;
+type EntityOccurrence = VertexOccurrence | EdgeOccurrence;
+
+interface DocumentOccurrences {
+  readonly vertices: readonly VertexOccurrence[];
+  readonly edges: readonly EdgeOccurrence[];
+  readonly all: readonly EntityOccurrence[];
+}
+
+interface VisitFrame {
+  readonly occurrence: EdgeOccurrence;
+  nextEndpointIndex: number;
+  maximumEndpointLevel: number;
+  hasValidDependencies: boolean;
+  awaiting?: EdgeOccurrence;
+}
 
 interface OrderedDiagnostic {
   readonly diagnostic: ValidationDiagnostic;
@@ -64,99 +89,179 @@ function isValidHsla(value: unknown): value is Hsla {
   );
 }
 
+function documentOccurrences(document: DiagramDocument): DocumentOccurrences {
+  const vertices: readonly VertexOccurrence[] = document.vertices.map(
+    (entity, index) => ({
+      entity,
+      entityOrder: index,
+      path: `vertices[${index}]`,
+    }),
+  );
+  const edges: readonly EdgeOccurrence[] = document.edges.map(
+    (entity, index) => ({
+      entity,
+      entityOrder: document.vertices.length + index,
+      path: `edges[${index}]`,
+    }),
+  );
+  return { vertices, edges, all: [...vertices, ...edges] };
+}
+
+function isEdgeOccurrence(
+  occurrence: EntityOccurrence,
+): occurrence is EdgeOccurrence {
+  return occurrence.entity.kind === "edge";
+}
+
+function diagnostic(
+  occurrence: EntityOccurrence,
+  code: string,
+  message: string,
+  path: string,
+): ValidationDiagnostic {
+  return Object.freeze({
+    code,
+    message,
+    entityId: occurrence.entity.id,
+    path,
+  });
+}
+
+function duplicateIdDiagnostic(
+  occurrence: EntityOccurrence,
+): ValidationDiagnostic {
+  return diagnostic(
+    occurrence,
+    "duplicate-id",
+    `Entity ID '${occurrence.entity.id}' is used more than once`,
+    `${occurrence.path}.id`,
+  );
+}
+
 function deriveEntityLevels(
-  document: DiagramDocument,
+  occurrences: DocumentOccurrences,
   report?: ReportDiagnostic,
-): ReadonlyMap<EntityId, number> {
-  const entities: readonly DiagramEntity[] = [
-    ...document.vertices,
-    ...document.edges,
-  ];
-  const entityById = new Map<EntityId, DiagramEntity>();
-  for (const entity of entities) {
-    if (!entityById.has(entity.id)) {
-      entityById.set(entity.id, entity);
+): ReadonlyMap<EntityOccurrence, number> {
+  const occurrenceById = new Map<EntityId, EntityOccurrence>();
+  for (const occurrence of occurrences.all) {
+    if (!occurrenceById.has(occurrence.entity.id)) {
+      occurrenceById.set(occurrence.entity.id, occurrence);
     }
   }
 
-  const edgeIndices = new Map(
-    document.edges.map((edge, index) => [edge, index] as const),
+  const occurrenceMarks = new Map<EdgeOccurrence, VisitMark>(
+    occurrences.edges.map((occurrence) => [occurrence, "white"] as const),
   );
-  const marks = new Map<Edge, VisitMark>(
-    document.edges.map((edge) => [edge, "white"] as const),
-  );
-  const levels = new Map<EntityId, number>();
-  for (const vertex of document.vertices) {
-    if (!levels.has(vertex.id)) {
-      levels.set(vertex.id, 0);
-    }
+  const levels = new Map<EntityOccurrence, number>();
+  for (const occurrence of occurrences.vertices) {
+    levels.set(occurrence, 0);
   }
 
-  const visit = (edge: Edge): number | null => {
-    const mark = marks.get(edge) ?? "white";
-    const edgeIndex = edgeIndices.get(edge) ?? 0;
-    if (mark === "black") {
-      return levels.get(edge.id) ?? null;
-    }
-    if (mark === "grey") {
-      report?.(
-        edge,
-        "dependency-cycle",
-        `Edge '${edge.id}' participates in a dependency cycle`,
-        `edges[${edgeIndex}]`,
-      );
-      return null;
+  for (const root of occurrences.edges) {
+    if ((occurrenceMarks.get(root) ?? "white") !== "white") {
+      continue;
     }
 
-    marks.set(edge, "grey");
-    let maximumEndpointLevel = 0;
-    let hasValidDependencies = true;
-    const endpoints = [
-      ["sourceId", edge.sourceId],
-      ["targetId", edge.targetId],
-    ] as const;
+    occurrenceMarks.set(root, "grey");
+    const stack: VisitFrame[] = [
+      {
+        occurrence: root,
+        nextEndpointIndex: 0,
+        maximumEndpointLevel: 0,
+        hasValidDependencies: true,
+      },
+    ];
 
-    for (const [property, endpointId] of endpoints) {
-      const endpoint = entityById.get(endpointId);
-      if (endpoint === undefined) {
-        report?.(
-          edge,
-          "missing-endpoint",
-          `Edge '${edge.id}' references missing ${property} '${endpointId}'`,
-          `edges[${edgeIndex}].${property}`,
-        );
-        hasValidDependencies = false;
+    while (stack.length > 0) {
+      const frame = stack.at(-1)!;
+      const edge = frame.occurrence.entity;
+
+      if (frame.awaiting !== undefined) {
+        const endpointLevel = levels.get(frame.awaiting);
+        if (endpointLevel === undefined) {
+          frame.hasValidDependencies = false;
+        } else {
+          frame.maximumEndpointLevel = Math.max(
+            frame.maximumEndpointLevel,
+            endpointLevel,
+          );
+        }
+        delete frame.awaiting;
         continue;
       }
 
-      const endpointLevel = endpoint.kind === "vertex" ? 0 : visit(endpoint);
-      if (endpointLevel === null) {
-        hasValidDependencies = false;
-      } else {
-        maximumEndpointLevel = Math.max(maximumEndpointLevel, endpointLevel);
+      if (frame.nextEndpointIndex < 2) {
+        const property =
+          frame.nextEndpointIndex === 0 ? "sourceId" : "targetId";
+        frame.nextEndpointIndex += 1;
+        const endpointId = edge[property];
+        const endpoint = occurrenceById.get(endpointId);
+        if (endpoint === undefined) {
+          report?.(
+            frame.occurrence,
+            "missing-endpoint",
+            `Edge '${edge.id}' references missing ${property} '${endpointId}'`,
+            `${frame.occurrence.path}.${property}`,
+          );
+          frame.hasValidDependencies = false;
+          continue;
+        }
+
+        if (!isEdgeOccurrence(endpoint)) {
+          frame.maximumEndpointLevel = Math.max(frame.maximumEndpointLevel, 0);
+          continue;
+        }
+
+        const endpointMark = occurrenceMarks.get(endpoint) ?? "white";
+        if (endpointMark === "grey") {
+          report?.(
+            endpoint,
+            "dependency-cycle",
+            `Edge '${endpoint.entity.id}' participates in a dependency cycle`,
+            endpoint.path,
+          );
+          frame.hasValidDependencies = false;
+          continue;
+        }
+        if (endpointMark === "black") {
+          const endpointLevel = levels.get(endpoint);
+          if (endpointLevel === undefined) {
+            frame.hasValidDependencies = false;
+          } else {
+            frame.maximumEndpointLevel = Math.max(
+              frame.maximumEndpointLevel,
+              endpointLevel,
+            );
+          }
+          continue;
+        }
+
+        occurrenceMarks.set(endpoint, "grey");
+        frame.awaiting = endpoint;
+        stack.push({
+          occurrence: endpoint,
+          nextEndpointIndex: 0,
+          maximumEndpointLevel: 0,
+          hasValidDependencies: true,
+        });
+        continue;
       }
-    }
 
-    marks.set(edge, "black");
-    if (!hasValidDependencies) {
-      return null;
+      occurrenceMarks.set(frame.occurrence, "black");
+      if (frame.hasValidDependencies) {
+        const level = frame.maximumEndpointLevel + 1;
+        levels.set(frame.occurrence, level);
+        if (level > MAX_ENTITY_LEVEL) {
+          report?.(
+            frame.occurrence,
+            "level-exceeded",
+            `Edge '${edge.id}' has derived level ${level}; maximum is ${MAX_ENTITY_LEVEL}`,
+            frame.occurrence.path,
+          );
+        }
+      }
+      stack.pop();
     }
-
-    const level = maximumEndpointLevel + 1;
-    levels.set(edge.id, level);
-    if (level > MAX_ENTITY_LEVEL) {
-      report?.(
-        edge,
-        "level-exceeded",
-        `Edge '${edge.id}' has derived level ${level}; maximum is ${MAX_ENTITY_LEVEL}`,
-        `edges[${edgeIndex}]`,
-      );
-    }
-    return level;
-  };
-
-  for (const edge of document.edges) {
-    visit(edge);
   }
 
   return levels;
@@ -165,44 +270,36 @@ function deriveEntityLevels(
 export function validateDocument(
   document: DiagramDocument,
 ): readonly ValidationDiagnostic[] {
-  const entities: readonly DiagramEntity[] = [
-    ...document.vertices,
-    ...document.edges,
-  ];
-  const entityOrders = new Map(
-    entities.map((entity, index) => [entity, index] as const),
-  );
+  const occurrences = documentOccurrences(document);
   const orderedDiagnostics: OrderedDiagnostic[] = [];
   let sequence = 0;
 
-  const report: ReportDiagnostic = (entity, code, message, path) => {
+  const report: ReportDiagnostic = (occurrence, code, message, path) => {
     orderedDiagnostics.push({
-      diagnostic: Object.freeze({ code, message, entityId: entity.id, path }),
-      entityOrder: entityOrders.get(entity) ?? entities.length,
+      diagnostic: diagnostic(occurrence, code, message, path),
+      entityOrder: occurrence.entityOrder,
       sequence,
     });
     sequence += 1;
   };
 
-  const firstEntityById = new Map<EntityId, DiagramEntity>();
-  for (const [index, entity] of entities.entries()) {
-    if (firstEntityById.has(entity.id)) {
-      const collection = entity.kind === "vertex" ? "vertices" : "edges";
-      const collectionIndex =
-        entity.kind === "vertex" ? index : index - document.vertices.length;
+  const firstOccurrenceById = new Map<EntityId, EntityOccurrence>();
+  for (const occurrence of occurrences.all) {
+    if (firstOccurrenceById.has(occurrence.entity.id)) {
       report(
-        entity,
+        occurrence,
         "duplicate-id",
-        `Entity ID '${entity.id}' is used more than once`,
-        `${collection}[${collectionIndex}].id`,
+        `Entity ID '${occurrence.entity.id}' is used more than once`,
+        `${occurrence.path}.id`,
       );
     } else {
-      firstEntityById.set(entity.id, entity);
+      firstOccurrenceById.set(occurrence.entity.id, occurrence);
     }
   }
 
   const occupiedPositions = new Map<string, EntityId>();
-  for (const [index, vertex] of document.vertices.entries()) {
+  for (const occurrence of occurrences.vertices) {
+    const vertex = occurrence.entity;
     const numericCoordinates = [
       ["x", vertex.x],
       ["y", vertex.y],
@@ -211,18 +308,18 @@ export function validateDocument(
     for (const [property, value] of numericCoordinates) {
       if (!isFiniteNumber(value)) {
         report(
-          vertex,
+          occurrence,
           "non-finite-number",
           `Vertex '${vertex.id}' has a non-finite ${property} coordinate`,
-          `vertices[${index}].${property}`,
+          `${occurrence.path}.${property}`,
         );
         hasValidPosition = false;
       } else if (!Number.isInteger(value)) {
         report(
-          vertex,
+          occurrence,
           "invalid-grid-position",
           `Vertex '${vertex.id}' has a non-integer ${property} coordinate`,
-          `vertices[${index}].${property}`,
+          `${occurrence.path}.${property}`,
         );
         hasValidPosition = false;
       }
@@ -232,10 +329,10 @@ export function validateDocument(
       const positionKey = JSON.stringify([vertex.x, vertex.y]);
       if (occupiedPositions.has(positionKey)) {
         report(
-          vertex,
+          occurrence,
           "duplicate-position",
           `Vertex '${vertex.id}' occupies an existing grid position (${vertex.x}, ${vertex.y})`,
-          `vertices[${index}]`,
+          occurrence.path,
         );
       } else {
         occupiedPositions.set(positionKey, vertex.id);
@@ -244,15 +341,16 @@ export function validateDocument(
 
     if (!isValidHsla(vertex.labelColour)) {
       report(
-        vertex,
+        occurrence,
         "invalid-colour",
         `Vertex '${vertex.id}' has an invalid label colour`,
-        `vertices[${index}].labelColour`,
+        `${occurrence.path}.labelColour`,
       );
     }
   }
 
-  for (const [index, edge] of document.edges.entries()) {
+  for (const occurrence of occurrences.edges) {
+    const edge = occurrence.entity;
     const numericOptions = [
       ["labelPosition", edge.options.labelPosition],
       ["offset", edge.options.offset],
@@ -265,33 +363,33 @@ export function validateDocument(
     for (const [property, value] of numericOptions) {
       if (!isFiniteNumber(value)) {
         report(
-          edge,
+          occurrence,
           "non-finite-number",
           `Edge '${edge.id}' has a non-finite ${property} option`,
-          `edges[${index}].options.${property}`,
+          `${occurrence.path}.options.${property}`,
         );
       }
     }
 
     if (!isValidHsla(edge.labelColour)) {
       report(
-        edge,
+        occurrence,
         "invalid-colour",
         `Edge '${edge.id}' has an invalid label colour`,
-        `edges[${index}].labelColour`,
+        `${occurrence.path}.labelColour`,
       );
     }
     if (!isValidHsla(edge.options.colour)) {
       report(
-        edge,
+        occurrence,
         "invalid-colour",
         `Edge '${edge.id}' has an invalid arrow colour`,
-        `edges[${index}].options.colour`,
+        `${occurrence.path}.options.colour`,
       );
     }
   }
 
-  deriveEntityLevels(document, report);
+  deriveEntityLevels(occurrences, report);
 
   orderedDiagnostics.sort(
     (left, right) =>
@@ -311,10 +409,11 @@ export function assertValidDocument(
 }
 
 export function entityLevel(document: DiagramDocument, id: EntityId): number {
-  const entity = [...document.vertices, ...document.edges].find(
-    (candidate) => candidate.id === id,
+  const occurrences = documentOccurrences(document);
+  const matches = occurrences.all.filter(
+    (occurrence) => occurrence.entity.id === id,
   );
-  if (entity === undefined) {
+  if (matches.length === 0) {
     throw new DocumentValidationError([
       Object.freeze({
         code: "entity-missing",
@@ -324,21 +423,35 @@ export function entityLevel(document: DiagramDocument, id: EntityId): number {
       }),
     ]);
   }
+  if (matches.length > 1) {
+    throw new DocumentValidationError(
+      matches.slice(1).map(duplicateIdDiagnostic),
+    );
+  }
 
-  const graphDiagnostics: ValidationDiagnostic[] = [];
+  const selected = matches[0]!;
+  const graphDiagnostics: OrderedDiagnostic[] = [];
+  let sequence = 0;
   const levels = deriveEntityLevels(
-    document,
-    (diagnosticEntity, code, message, path) => {
-      graphDiagnostics.push(
-        Object.freeze({ code, message, entityId: diagnosticEntity.id, path }),
-      );
+    occurrences,
+    (occurrence, code, message, path) => {
+      graphDiagnostics.push({
+        diagnostic: diagnostic(occurrence, code, message, path),
+        entityOrder: occurrence.entityOrder,
+        sequence,
+      });
+      sequence += 1;
     },
   );
-  const level = levels.get(entity.id);
+  const level = levels.get(selected);
   if (level === undefined) {
+    graphDiagnostics.sort(
+      (left, right) =>
+        left.entityOrder - right.entityOrder || left.sequence - right.sequence,
+    );
     throw new DocumentValidationError(
       graphDiagnostics.length > 0
-        ? graphDiagnostics
+        ? graphDiagnostics.map(({ diagnostic: item }) => item)
         : [
             Object.freeze({
               code: "level-unavailable",

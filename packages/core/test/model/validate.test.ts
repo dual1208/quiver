@@ -279,4 +279,157 @@ describe("validateDocument", () => {
       );
     }
   });
+
+  it("handles 15,000 reverse-ordered dependencies without using the call stack", () => {
+    const dependencyOrderedEdges: Edge[] = [];
+    let dependencyId = source.id;
+    for (let level = 1; level <= 15_000; level += 1) {
+      const next = edge(`e-deep-${level}`, dependencyId, target.id);
+      dependencyOrderedEdges.push(next);
+      dependencyId = next.id;
+    }
+    const document = {
+      ...valid,
+      edges: [...dependencyOrderedEdges].reverse(),
+    };
+
+    const first = validateDocument(document);
+    const second = validateDocument(document);
+
+    expect(second).toEqual(first);
+    expect(first).toHaveLength(14_996);
+    expect(first[0]).toEqual(
+      expect.objectContaining({
+        code: "level-exceeded",
+        entityId: entityId("e-deep-15000"),
+        path: "edges[0]",
+      }),
+    );
+    expect(first.at(-1)).toEqual(
+      expect.objectContaining({
+        code: "level-exceeded",
+        entityId: entityId("e-deep-5"),
+        path: "edges[14995]",
+      }),
+    );
+    expect(entityLevel(document, entityId("e-deep-15000"))).toBe(15_000);
+    expect(() => assertValidDocument(document)).toThrow(
+      DocumentValidationError,
+    );
+  });
+
+  it("rejects an entity level lookup ambiguous between a vertex and edge", () => {
+    const duplicateId = entityId("vertex-edge-duplicate");
+    const duplicateVertex: Vertex = { ...source, id: duplicateId };
+    const duplicateEdge: Edge = {
+      ...edge("vertex-edge-duplicate", target.id, target.id),
+      id: duplicateId,
+    };
+    const document = {
+      ...valid,
+      vertices: [duplicateVertex, target],
+      edges: [duplicateEdge],
+    };
+
+    expect(validateDocument(document)).toContainEqual(
+      expect.objectContaining({
+        code: "duplicate-id",
+        entityId: duplicateId,
+        path: "edges[0].id",
+      }),
+    );
+    expect(() => entityLevel(document, duplicateId)).toThrow(
+      DocumentValidationError,
+    );
+    try {
+      entityLevel(document, duplicateId);
+    } catch (error) {
+      expect((error as DocumentValidationError).diagnostics).toEqual([
+        expect.objectContaining({
+          code: "duplicate-id",
+          entityId: duplicateId,
+          path: "edges[0].id",
+        }),
+      ]);
+    }
+  });
+
+  it("rejects an entity level lookup ambiguous between two edges", () => {
+    const duplicateId = entityId("edge-edge-duplicate");
+    const firstEdge: Edge = {
+      ...edge("edge-edge-duplicate", source.id, target.id),
+      id: duplicateId,
+    };
+    const secondEdge: Edge = {
+      ...edge("edge-edge-duplicate", duplicateId, target.id),
+      id: duplicateId,
+    };
+    const document = { ...valid, edges: [firstEdge, secondEdge] };
+
+    expect(validateDocument(document)).toContainEqual(
+      expect.objectContaining({
+        code: "duplicate-id",
+        entityId: duplicateId,
+        path: "edges[1].id",
+      }),
+    );
+    expect(() => entityLevel(document, duplicateId)).toThrow(
+      DocumentValidationError,
+    );
+    try {
+      entityLevel(document, duplicateId);
+    } catch (error) {
+      expect((error as DocumentValidationError).diagnostics).toEqual([
+        expect.objectContaining({
+          code: "duplicate-id",
+          entityId: duplicateId,
+          path: "edges[1].id",
+        }),
+      ]);
+    }
+  });
+
+  it("orders diagnostics for aliased vertex occurrences by their exact paths", () => {
+    const aliased = vertex("v-aliased", 0, 0, [361, 0, 0, 1]);
+    const middle = vertex("v-middle", 1, 0, [0, 101, 0, 1]);
+    const document = {
+      ...valid,
+      vertices: [aliased, middle, aliased],
+      edges: [],
+    };
+
+    const first = validateDocument(document);
+    const second = validateDocument(document);
+
+    expect(second).toEqual(first);
+    expect(first.map(({ code, path }) => [code, path])).toEqual([
+      ["invalid-colour", "vertices[0].labelColour"],
+      ["invalid-colour", "vertices[1].labelColour"],
+      ["duplicate-id", "vertices[2].id"],
+      ["duplicate-position", "vertices[2]"],
+      ["invalid-colour", "vertices[2].labelColour"],
+    ]);
+  });
+
+  it("orders graph diagnostics for aliased edge occurrences by their exact paths", () => {
+    const aliased: Edge = {
+      ...edge("e-aliased", source.id, entityId("missing-aliased")),
+      options: { ...DEFAULT_EDGE_OPTIONS, curve: Number.NaN },
+    };
+    const middle = edge("e-middle", source.id, entityId("missing-middle"));
+    const document = { ...valid, edges: [aliased, middle, aliased] };
+
+    const first = validateDocument(document);
+    const second = validateDocument(document);
+
+    expect(second).toEqual(first);
+    expect(first.map(({ code, path }) => [code, path])).toEqual([
+      ["non-finite-number", "edges[0].options.curve"],
+      ["missing-endpoint", "edges[0].targetId"],
+      ["missing-endpoint", "edges[1].targetId"],
+      ["duplicate-id", "edges[2].id"],
+      ["non-finite-number", "edges[2].options.curve"],
+      ["missing-endpoint", "edges[2].targetId"],
+    ]);
+  });
 });

@@ -1,21 +1,28 @@
-import { StyleSheet, Text, View } from "react-native";
+import { router } from "expo-router";
+import { LibraryScreen } from "../src/library/LibraryScreen";
+
+const documents = [] as const;
+
+function openNewDocument() {
+  router.push({ pathname: "/editor/[id]", params: { id: "new" } });
+}
+
+function openDocument(id: string) {
+  router.push({ pathname: "/editor/[id]", params: { id } });
+}
+
+function deferImport() {}
+
+function deferDocumentActions() {}
 
 export default function LibraryRoute() {
   return (
-    <View style={styles.screen} testID="library-screen">
-      <Text style={styles.title}>Quiver</Text>
-    </View>
+    <LibraryScreen
+      documents={documents}
+      onDocumentActions={deferDocumentActions}
+      onImportDocument={deferImport}
+      onNewDocument={openNewDocument}
+      onOpenDocument={openDocument}
+    />
   );
 }
-
-const styles = StyleSheet.create({
-  screen: {
-    alignItems: "center",
-    flex: 1,
-    justifyContent: "center",
-  },
-  title: {
-    fontSize: 32,
-    fontWeight: "600",
-  },
-});

@@ -47,7 +47,7 @@ export default ({ config }: ConfigContext): ExpoConfig => {
     },
     android: {
       adaptiveIcon: {
-        backgroundColor: "#E6F4FE",
+        backgroundColor: "#191919",
         backgroundImage: "./assets/images/android-icon-background.png",
         foregroundImage: "./assets/images/android-icon-foreground.png",
         monochromeImage: "./assets/images/android-icon-monochrome.png",
@@ -68,9 +68,9 @@ export default ({ config }: ConfigContext): ExpoConfig => {
       [
         "expo-splash-screen",
         {
-          backgroundColor: "#208AEF",
+          backgroundColor: "#191919",
           image: "./assets/images/splash-icon.png",
-          imageWidth: 76,
+          imageWidth: 96,
         },
       ],
       "expo-sqlite",

@@ -377,6 +377,9 @@ safe integers; shortening and opaque HSLA components use accepted ranges/precisi
 call must decode with no diagnostics and must never manufacture a payload upstream will skip. Preserve an
 odd legacy `length` migration through a valid compatible representation or reject it explicitly rather
 than emitting fractional `shorten` values that upstream rejects.
+Apply the decoder envelope to every included full/selection closure before returning: at most 50,000 wire
+cells and at most 5 MiB of UTF-8 JSON. Encode the JSON to bytes once, enforce the inclusive byte boundary,
+then base64 those exact bytes; one-over-limit returns a typed `DocumentValidationError` without mutation.
 
 `encodeQuiverSelection` includes the transitive endpoint closure and returns
 `{ payload, selectedWireIndices }`, because v0 has no selection marker and a payload alone cannot

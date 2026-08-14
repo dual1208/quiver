@@ -84,6 +84,16 @@ function hasArrowhead(name: string): boolean {
   return name !== "none" && name !== "invisible";
 }
 
+function canvasColour(
+  value: readonly [number, number, number, number],
+  dark: boolean,
+  darkFallback: string,
+): string {
+  return dark && value[1] <= 8 && value[2] <= 18 && value[3] > 0.5
+    ? darkFallback
+    : hslaToColor(value);
+}
+
 export const DiagramCanvas = forwardRef<
   DiagramCanvasHandle,
   DiagramCanvasProps
@@ -460,7 +470,11 @@ export const DiagramCanvas = forwardRef<
                 const selected = selectedSet.has(edge.id);
                 const color = selected
                   ? theme.colors.selection
-                  : hslaToColor(edge.edge.options.colour);
+                  : canvasColour(
+                      edge.edge.options.colour,
+                      theme.mode === "dark",
+                      theme.colors.textPrimary,
+                    );
                 const bodyName = edge.edge.options.style.body.name;
                 const headName = edge.edge.options.style.head.name;
                 return (
@@ -494,7 +508,11 @@ export const DiagramCanvas = forwardRef<
                           y={edge.labelPoint.y - edge.labelHeight / 2}
                         />
                         <SkiaText
-                          color={hslaToColor(edge.edge.labelColour)}
+                          color={canvasColour(
+                            edge.edge.labelColour,
+                            theme.mode === "dark",
+                            theme.colors.textPrimary,
+                          )}
                           font={edgeFont}
                           text={edge.label}
                           x={edge.labelX + 6}
@@ -537,7 +555,11 @@ export const DiagramCanvas = forwardRef<
                       y={vertex.top}
                     />
                     <SkiaText
-                      color={hslaToColor(vertex.vertex.labelColour)}
+                      color={canvasColour(
+                        vertex.vertex.labelColour,
+                        theme.mode === "dark",
+                        theme.colors.textPrimary,
+                      )}
                       font={vertexFont}
                       text={vertex.label}
                       x={vertex.labelX}

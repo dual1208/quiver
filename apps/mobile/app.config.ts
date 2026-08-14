@@ -40,7 +40,7 @@ export default ({ config }: ConfigContext): ExpoConfig => {
     icon: "./assets/images/icon.png",
     ios: {
       buildNumber: "1",
-      bundleIdentifier: "app.quiver.native",
+      bundleIdentifier: "app.quiver.mobile",
       icon: "./assets/expo.icon",
       infoPlist: {
         CFBundleDisplayName: displayName,
@@ -61,7 +61,7 @@ export default ({ config }: ConfigContext): ExpoConfig => {
         "android.permission.WRITE_EXTERNAL_STORAGE",
         "android.permission.SYSTEM_ALERT_WINDOW",
       ],
-      package: "app.quiver.native",
+      package: "app.quiver.mobile",
       permissions: [
         "android.permission.INTERNET",
         "android.permission.VIBRATE",

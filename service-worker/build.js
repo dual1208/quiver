@@ -1,9 +1,9 @@
 const { generateSW } = require("workbox-build");
 
 generateSW({
-  globDirectory: "../src/",
+  globDirectory: "../legacy-web/",
   globPatterns: ["**/*"],
-  swDest: "../src/service-worker.js",
+  swDest: "../legacy-web/service-worker.js",
   sourcemap: false,
 }).then(({ count, size, warnings }) => {
   if (warnings.length > 0) {

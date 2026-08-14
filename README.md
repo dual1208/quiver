@@ -77,17 +77,18 @@ See [Editor integration](https://github.com/varkor/quiver/wiki/Editor-integratio
 wiki](https://github.com/varkor/quiver/wiki).
 
 ## Building
-Run `make` from the command line, and then open `src/index.html` in your favourite web browser.
+Run `make legacy` from the command line to prepare the original web application under
+`legacy-web/`.
 
 If this fails, you might be using an incompatible version of Make or Bash. In this case, you can
 manually download the [latest release](https://github.com/KaTeX/KaTeX/releases) of KaTeX and place
-it under `src/` as `src/KaTeX/`. If KaTeX has not been given the correct path, you will get an
-error telling you that KaTeX failed to load.
+it under `legacy-web/` as `legacy-web/KaTeX/`. If KaTeX has not been given the correct path, you
+will get an error telling you that KaTeX failed to load.
 
 **quiver** must be run through `localhost`. If you have Python installed, an easy solution is to
 run:
 ```
-make serve
+make legacy-serve
 ```
 in the **quiver** directory and then open `localhost:8000` in browser.
 

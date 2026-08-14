@@ -12,8 +12,8 @@
   },
   "packageManager": "npm@11.16.0",
   "scripts": {
-    "fmt": "prettier --check --ignore-unknown package.json tsconfig.base.json vitest.workspace.ts packages",
-    "lint": "eslint packages --ext .ts --report-unused-disable-directives --max-warnings 0",
+    "fmt": "prettier --check --ignore-unknown package.json tsconfig.base.json vitest.workspace.ts packages test",
+    "lint": "eslint packages test --ext .js,.ts --report-unused-disable-directives --max-warnings 0",
     "typecheck": "tsc -b packages/core",
     "test": "vitest run --config vitest.workspace.ts",
     "ci": "npm-run-all fmt lint typecheck test"

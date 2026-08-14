@@ -10,7 +10,7 @@ readonly ANDROID_PHONE_ID="ee6c6a88"
 readonly APPLE_BUNDLE_ID="app.quiver.mobile"
 readonly ANDROID_PACKAGE="app.quiver.mobile"
 readonly ANDROID_NDK_VERSION="27.1.12297006"
-readonly MIN_FREE_GIB="${QUIVER_DEPLOY_MIN_FREE_GIB:-25}"
+readonly MIN_FREE_GIB="${QUIVER_DEPLOY_MIN_FREE_GIB:-10}"
 
 REPOSITORY_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 readonly REPOSITORY_ROOT
@@ -90,15 +90,20 @@ check_host() {
     die "insufficient disk space: at least ${MIN_FREE_GIB} GiB must be free before native builds"
   fi
 
-  if [[ -z "${APPLE_TEAM_ID:-}" ]]; then
-    APPLE_TEAM_ID="${APPLE_TEAM_ID_VAR:-}"
-  fi
+  APPLE_TEAM_ID="${APPLE_TEAM_ID_VAR:-${APPLE_TEAM_ID:-}}"
   [[ "${APPLE_TEAM_ID}" =~ ^[A-Z0-9]{10}$ ]] || die "APPLE_TEAM_ID must be supplied as a 10-character GitHub secret or variable"
 
   local android_sdk
   android_sdk="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
   [[ -n "${android_sdk}" && -d "${android_sdk}" ]] || die "ANDROID_SDK_ROOT or ANDROID_HOME must identify the Android SDK"
   export ANDROID_SDK_ROOT="${android_sdk}"
+
+  if [[ -x "/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home/bin/java" ]]; then
+    export JAVA_HOME="/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home"
+  fi
+  [[ -x "${JAVA_HOME:-}/bin/java" ]] || die "a JDK 17 installation is required"
+  "${JAVA_HOME}/bin/java" -version 2>&1 | head -n 1 | grep -Eq 'version "17\.' \
+    || die "JAVA_HOME must select JDK 17"
 }
 
 apple_device_ready() {
@@ -161,6 +166,15 @@ preflight_devices() {
   local apple_log="${TEMP_DIR}/apple-devices.log"
   local adb_inventory="${TEMP_DIR}/adb-devices.txt"
 
+  # A direct capability probe brings an idle wired CoreDevice tunnel online.
+  # Inventory alone can report a healthy iPhone as disconnected until this call.
+  for identifier in "${APPLE_IPAD_ID}" "${APPLE_IPHONE_ID}"; do
+    xcrun devicectl device info apps \
+      --device "${identifier}" \
+      --timeout 30 >/dev/null 2>&1 \
+      || die "required Apple device could not start developer services: ${identifier}"
+  done
+
   if ! xcrun devicectl list devices \
     --timeout 20 \
     --quiet \
@@ -208,7 +222,7 @@ generate_native_projects() {
   grep -Fq "PRODUCT_BUNDLE_IDENTIFIER = ${APPLE_BUNDLE_ID};" \
     "${REPOSITORY_ROOT}/apps/mobile/ios/Quiver.xcodeproj/project.pbxproj" \
     || die "generated iOS project does not use ${APPLE_BUNDLE_ID}"
-  grep -Fq "applicationId \"${ANDROID_PACKAGE}\"" \
+  grep -Eq "applicationId ['\"]${ANDROID_PACKAGE}['\"]" \
     "${REPOSITORY_ROOT}/apps/mobile/android/app/build.gradle" \
     || die "generated Android project does not use ${ANDROID_PACKAGE}"
 

@@ -209,6 +209,20 @@ Core Task 5 is a hard production dependency. Tests may inject a `NativeDocumentC
 duplicate native JSON parsing or ship production wiring until core exports `encodeNativeDocument`,
 `decodeNativeDocument`, and their final diagnostic/result types.
 
+The injected boundary is exactly:
+
+```ts
+interface NativeDocumentCodec {
+  encode(document: DiagramDocument): string;
+  decode(text: string): DecodeResult;
+}
+```
+
+Treat only `ok: true` as valid and ignore the native decoder's intentionally empty `wireIndexToId` map.
+Encode before opening a transaction. Recovery preserves typed diagnostics while scanning snapshots.
+Duplicate by decoding into an owned document, assigning a new document ID/title, and re-encoding; never
+mutate the decoded object.
+
 - [ ] **Step 1: Write failing repository and recovery tests**
 
 Use an injected adapter backed in Jest by Node's built-in `node:sqlite` `DatabaseSync(":memory:")`; Expo's

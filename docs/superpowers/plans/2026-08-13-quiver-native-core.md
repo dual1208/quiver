@@ -395,32 +395,60 @@ git commit -m "feat(core): preserve Quiver link compatibility"
 
 **Files:**
 - Create: `packages/core/src/codec/native.ts`
+- Create: `packages/core/src/codec/types.ts`
 - Create: `packages/core/test/codec/native.test.ts`
+- Create: `packages/test-fixtures/documents/native-schema-0.quiver.json`
+- Create: `packages/test-fixtures/documents/native-schema-1.quiver.json`
+- Modify: `packages/core/package.json`
+- Modify: `package-lock.json`
 - Modify: `packages/core/src/index.ts`
 
 **Interfaces:**
 - Consumes: `DiagramDocument`, `CORE_SCHEMA_VERSION`, model validation.
-- Produces: `NATIVE_MEDIA_TYPE`, `encodeNativeDocument(document): string`, `decodeNativeDocument(text, options): DecodeResult`, `migrateNativeValue(value): unknown`.
+- Produces: `NATIVE_MEDIA_TYPE = "application/vnd.quiver.native+json"`, the `.quiver.json` extension,
+  `encodeNativeDocument(document): string`, and `decodeNativeDocument(text): DecodeResult`.
+
+Move Task 4's public `QuiverDiagnostic` and discriminated `DecodeResult` definitions to the neutral
+`codec/types.ts` module without changing their names or shape. Native decode uses that exact result,
+returns `wireIndexToId: []` on both branches, and omits `wireCellIndex` from native diagnostics. Keep the
+schema migration function internal rather than exporting unvalidated `unknown`. App code injects only
+`{ encode(document): string; decode(text): DecodeResult }`.
 
 - [ ] **Step 1: Write failing canonicalization and limit tests**
 
-Assert pretty-printed output ends in one newline, keys use model order, decode rejects unsupported future
-versions, 50,001 entities, non-finite numbers, and a 5 MB+ string, and migration from the explicit test
-schema `0` renames `name` to `title`.
+Assert the complete canonical byte string: two-space indentation, exactly one terminal newline, model key
+order at every nested level, stored array order, and no dependence on object insertion order. Construct an
+explicit deep-copied DTO rather than stringifying the caller. Decode rejects duplicate keys, unsupported
+future versions, 50,001 combined entities, non-finite numbers, unsafe coordinates, opening depth 65, and
+input above 5 MiB in UTF-8 bytes while accepting the exact byte/depth/entity limits. Include ASCII and
+emoji byte-boundary cases, escaped braces/quotes, prototype-shaped keys at every level, and `1e400`.
+Migration from explicit schema `0` renames `name` to `title`, constructs a fresh schema-1 value, and rejects
+records containing both names. Golden-test checked-in schema-0 and schema-1 `.quiver.json` fixtures.
 
 - [ ] **Step 2: Implement schema-specific decoders**
 
-Use Zod only at the untrusted JSON boundary. Parse into unknown, run the ordered `0 -> 1` migration, then
-construct readonly model values and call `validateDocument`. Return `{ ok: true, document, diagnostics }`
-or `{ ok: false, diagnostics }`; never expose a thrown Zod error.
+Add exact production dependency `zod@4.4.3` to `packages/core`. Before `JSON.parse`, enforce the UTF-8 byte
+limit and run one string/escape-aware lexical scanner that rejects duplicate object keys and opening depth
+65 (root depth is 1). After parsing, require a plain root record and enforce the combined entity limit
+before deep Zod traversal. Use strict Zod objects at every level, explicit finite checks for every number,
+and safe-integer checks for coordinates. Do not merge or assign untrusted records. Run the ordered pure
+`0 -> 1` migration, construct fresh readonly model values, and call `validateDocument`.
+
+Map every failure to deterministic project-owned codes/messages/paths; never expose `ZodError` text.
+Native preflight codes are `input-too-large`, `nesting-too-deep`, `invalid-json`,
+`invalid-schema-version`, `unsupported-schema-version`, `entity-limit-exceeded`,
+`invalid-native-document`, and `migration-conflict`; pass model-validation codes through unchanged.
+Reuse Task 4's bounded-JSON preflight helper if available so the two codecs cannot diverge.
 
 - [ ] **Step 3: Verify and commit**
 
 Run: `npm test -w @quiver/core -- test/codec/native.test.ts`  
-Expected: all canonical, migration, and limit cases pass.
+Expected: all canonical, migration, ownership, and adversarial limit cases pass. Include fixed-seed
+fast-check properties with at least 500 runs for `decode(encode(document))`, byte-stable
+`encode(decode(encoded))`, equivalent insertion orders, caller non-mutation, and nested alias separation.
 
 ```bash
-git add packages/core/src/codec/native.ts packages/core/test/codec/native.test.ts packages/core/src/index.ts
+git add packages/core/src/codec packages/core/test/codec/native.test.ts packages/test-fixtures/documents packages/core/package.json package-lock.json packages/core/src/index.ts
 git commit -m "feat(core): add versioned native document codec"
 ```
 

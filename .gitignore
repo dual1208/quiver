@@ -1,5 +1,9 @@
-src/KaTeX/*
-src/Workbox/*
-src/workbox-*
-src/service-worker.js*
-src/icon-*.png
+node_modules/
+**/dist/
+*.tsbuildinfo
+
+legacy-web/KaTeX/*
+legacy-web/Workbox/*
+legacy-web/workbox-*
+legacy-web/service-worker.js*
+legacy-web/icon-*.png

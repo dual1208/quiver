@@ -10,7 +10,7 @@ readonly ANDROID_PHONE_ID="ee6c6a88"
 readonly APPLE_BUNDLE_ID="app.quiver.mobile"
 readonly ANDROID_PACKAGE="app.quiver.mobile"
 readonly ANDROID_NDK_VERSION="27.1.12297006"
-readonly MIN_FREE_GIB="${QUIVER_DEPLOY_MIN_FREE_GIB:-10}"
+readonly MIN_FREE_GIB="${QUIVER_DEPLOY_MIN_FREE_GIB:-5}"
 
 REPOSITORY_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 readonly REPOSITORY_ROOT

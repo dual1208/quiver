@@ -45,6 +45,63 @@ function edge(id: string, sourceId: EntityId, targetId: EntityId): Edge {
   };
 }
 
+function writableVertex(id: string, x: number, y: number, label = id) {
+  const labelColour: [number, number, number, number] = [0, 0, 0, 1];
+  return {
+    kind: "vertex" as const,
+    id: entityId(id),
+    x,
+    y,
+    label,
+    labelColour,
+  };
+}
+
+function writableEdge(id: string, sourceId: EntityId, targetId: EntityId) {
+  const labelColour: [number, number, number, number] = [0, 0, 0, 1];
+  const colour: [number, number, number, number] = [0, 0, 0, 1];
+  return {
+    kind: "edge" as const,
+    id: entityId(id),
+    sourceId,
+    targetId,
+    label: id,
+    labelColour,
+    options: {
+      labelAlignment: "centre" as const,
+      labelPosition: 50,
+      offset: 0,
+      curve: 0,
+      radius: 0,
+      angle: 0,
+      shorten: { source: 0, target: 0 },
+      colour,
+      shape: "bezier" as const,
+      style: {
+        tail: { name: "none" },
+        body: { name: "solid" },
+        head: { name: "arrowhead", side: "top" as const },
+      },
+    },
+  };
+}
+
+function writableDocument(
+  vertices: ReturnType<typeof writableVertex>[],
+  edges: ReturnType<typeof writableEdge>[] = [],
+  id = "writable-document",
+) {
+  return {
+    schemaVersion: CORE_SCHEMA_VERSION,
+    id,
+    title: id,
+    vertices,
+    edges,
+    macros: "",
+    preferredRenderer: "katex" as const,
+  };
+}
+
 function document(
   vertices: readonly Vertex[],
   edges: readonly Edge[] = [],
@@ -383,7 +440,8 @@ describe("document commands", () => {
       after: replacement,
     };
 
-    expect(applyCommand(base, command)).toBe(replacement);
+    expect(applyCommand(base, command)).toEqual(replacement);
+    expect(applyCommand(base, command)).not.toBe(replacement);
     expect(applyCommand(replacement, invertCommand(base, command))).toEqual(
       base,
     );
@@ -416,6 +474,124 @@ describe("document commands", () => {
     expect(base).toEqual(beforeDocument);
     expect(command).toEqual(beforeCommand);
     expect(changed).not.toBe(base);
+  });
+
+  it("owns source and add-entity values after direct application", () => {
+    const sourceVertex = writableVertex("v-source", 0, 0, "Source");
+    const source = writableDocument([sourceVertex]);
+    const added = writableVertex("v-added-owned", 1, 0, "Added");
+    const arrow = writableEdge("e-added-owned", added.id, sourceVertex.id);
+    const command = {
+      type: "add-entities" as const,
+      vertices: [added],
+      edges: [arrow],
+    };
+
+    const changed = applyCommand(source, command);
+    const expected = structuredClone(changed);
+
+    sourceVertex.label = "mutated source";
+    sourceVertex.labelColour[0] = 180;
+    source.vertices.push(writableVertex("v-late", 2, 0));
+    added.label = "mutated add";
+    added.labelColour[1] = 50;
+    arrow.label = "mutated edge";
+    arrow.options.shorten.source = 12;
+    arrow.options.colour[2] = 30;
+    arrow.options.style.head.name = "mutated head";
+    command.vertices.length = 0;
+    command.edges.length = 0;
+
+    expect(sourceVertex.label).toBe("mutated source");
+    expect(added.label).toBe("mutated add");
+    expect(changed).toEqual(expected);
+  });
+
+  it("owns update payloads and their precomputed inverse", () => {
+    const before = writableVertex("v-update-owned", 0, 0, "Before");
+    const source = writableDocument([before]);
+    const after = writableVertex("v-update-owned", 0, 0, "After");
+    after.labelColour[0] = 20;
+    const command = {
+      type: "update-entity" as const,
+      id: before.id,
+      before,
+      after,
+    };
+
+    const changed = applyCommand(source, command);
+    const inverse = invertCommand(source, command);
+    const expectedChanged = structuredClone(changed);
+    const expectedInverse = structuredClone(inverse);
+
+    before.label = "mutated before";
+    before.labelColour[0] = 120;
+    after.label = "mutated after";
+    after.labelColour[0] = 220;
+
+    expect(changed).toEqual(expectedChanged);
+    expect(inverse).toEqual(expectedInverse);
+  });
+
+  it("owns replacement documents and exact replacement inverses", () => {
+    const sourceVertex = writableVertex("v-replace-source", 0, 0, "Source");
+    const source = writableDocument([sourceVertex], [], "replace-source");
+    const replacementVertex = writableVertex(
+      "v-replacement",
+      1,
+      0,
+      "Replacement",
+    );
+    const replacement = writableDocument(
+      [replacementVertex],
+      [],
+      "replacement",
+    );
+    const command = {
+      type: "replace-document" as const,
+      before: source,
+      after: replacement,
+    };
+
+    const changed = applyCommand(source, command);
+    const inverse = invertCommand(source, command);
+    const expectedChanged = structuredClone(changed);
+    const expectedInverse = structuredClone(inverse);
+
+    source.title = "mutated source title";
+    sourceVertex.label = "mutated source vertex";
+    replacement.title = "mutated replacement title";
+    replacementVertex.label = "mutated replacement vertex";
+    replacementVertex.labelColour[3] = 0.5;
+
+    expect(changed).toEqual(expectedChanged);
+    expect(inverse).toEqual(expectedInverse);
+  });
+
+  it("owns removal payloads and move points returned by command helpers", () => {
+    const left = writableVertex("v-owned-left", 0, 0, "Left");
+    const right = writableVertex("v-owned-right", 1, 0, "Right");
+    const arrow = writableEdge("e-owned-arrow", left.id, right.id);
+    const source = writableDocument([left, right], [arrow]);
+    const removal = createRemoveEntitiesCommand(source, [left.id]);
+    const from = { x: 0, y: 0 };
+    const to = { x: 4, y: 5 };
+    const move = {
+      type: "move-vertices" as const,
+      moves: [{ id: left.id, from, to }],
+    };
+    const inverse = invertCommand(source, move);
+    const expectedRemoval = structuredClone(removal);
+    const expectedInverse = structuredClone(inverse);
+
+    left.label = "mutated left";
+    left.labelColour[0] = 90;
+    arrow.options.style.body.name = "mutated body";
+    from.x = 99;
+    to.y = 99;
+
+    expect(removal).toEqual(expectedRemoval);
+    expect(inverse).toEqual(expectedInverse);
   });
 });
 
@@ -459,7 +635,8 @@ describe("bounded history", () => {
         }),
       "invalid-result",
     );
-    expect(before.document).toBe(base);
+    expect(before.document).toEqual(base);
+    expect(before.document).not.toBe(base);
     expect(before.past).toEqual([]);
   });
 
@@ -588,5 +765,70 @@ describe("bounded history", () => {
     expect(committed).not.toBe(initial);
     expect(undone).not.toBe(committed);
     expect(redone).not.toBe(undone);
+  });
+
+  it("owns the initial document without freezing caller values", () => {
+    const first = writableVertex("v-history-first", 0, 0, "First");
+    const second = writableVertex("v-history-second", 1, 0, "Second");
+    const arrow = writableEdge("e-history", first.id, second.id);
+    const source = writableDocument([first, second], [arrow]);
+    const history = createHistory(source);
+    const expected = structuredClone(history);
+
+    source.title = "mutated title";
+    source.vertices.length = 0;
+    first.label = "mutated first";
+    first.labelColour[0] = 180;
+    arrow.label = "mutated arrow";
+    arrow.labelColour[1] = 40;
+    arrow.options.shorten.target = 10;
+    arrow.options.colour[2] = 25;
+    arrow.options.style.tail.name = "mutated tail";
+
+    expect(source.title).toBe("mutated title");
+    expect(arrow.options.style.tail.name).toBe("mutated tail");
+    expect(history).toEqual(expected);
+  });
+
+  it("owns committed forward and inverse data across undo and redo", () => {
+    const before = writableVertex("v-committed", 0, 0, "Before");
+    const source = writableDocument([before]);
+    const after = writableVertex("v-committed", 0, 0, "After");
+    after.labelColour[0] = 45;
+    const update = {
+      type: "update-entity" as const,
+      id: before.id,
+      before,
+      after,
+    };
+    const commands = [update];
+    const transaction = { commands, mergeKey: "owned-update" };
+    const initial = createHistory(source);
+    const expectedInitial = structuredClone(initial);
+    const committed = commitTransaction(initial, transaction);
+    const expectedCommitted = structuredClone(committed);
+
+    before.label = "mutated before commit input";
+    before.labelColour[0] = 145;
+    after.label = "mutated after commit input";
+    after.labelColour[0] = 245;
+    update.id = entityId("mutated-id");
+    transaction.mergeKey = "mutated-key";
+    commands.length = 0;
+
+    expect(initial).toEqual(expectedInitial);
+    expect(committed).toEqual(expectedCommitted);
+
+    const undone = undo(committed);
+    const expectedUndone = structuredClone(undone);
+
+    before.label = "mutated again after undo";
+    after.label = "mutated again after undo";
+    commands.push(update);
+
+    expect(undone).toEqual(expectedUndone);
+    expect(undone.document).toEqual(expectedInitial.document);
+    expect(redo(undone).document).toEqual(expectedCommitted.document);
+    expect(committed).toEqual(expectedCommitted);
   });
 });

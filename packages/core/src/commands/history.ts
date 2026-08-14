@@ -1,5 +1,6 @@
 import type { DiagramDocument } from "../model/types";
 import { applyCommand, invertCommand } from "./basic";
+import { snapshotDocument, snapshotTransaction } from "./snapshot";
 import type { CommandTransaction, DocumentCommand } from "./types";
 
 const DEFAULT_HISTORY_LIMIT = 200;
@@ -30,19 +31,14 @@ function prepareEntry(
 ): readonly [document: DiagramDocument, entry: HistoryEntry] {
   let current = document;
   const inverseCommands: DocumentCommand[] = [];
+  const forward = snapshotTransaction(transaction);
 
-  for (const command of transaction.commands) {
+  for (const command of forward.commands) {
     const inverse = invertCommand(current, command);
     current = applyCommand(current, command);
     inverseCommands.unshift(inverse);
   }
 
-  const forward: CommandTransaction = {
-    commands: [...transaction.commands],
-    ...(transaction.mergeKey === undefined
-      ? {}
-      : { mergeKey: transaction.mergeKey }),
-  };
   return [
     current,
     {
@@ -67,7 +63,7 @@ export function createHistory(
     throw new RangeError("History limit must be a non-negative integer");
   }
   return {
-    document,
+    document: snapshotDocument(document),
     past: [],
     future: [],
     limit,

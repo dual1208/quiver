@@ -6,6 +6,7 @@ import type {
   EntityId,
   Vertex,
 } from "../model/types";
+import { snapshotCommand, snapshotDocument } from "./snapshot";
 import { CommandError, type DocumentCommand } from "./types";
 
 function structuralEqual(left: unknown, right: unknown): boolean {
@@ -110,7 +111,7 @@ function removalIds(
   return ids;
 }
 
-export function createRemoveEntitiesCommand(
+function createOwnedRemoveEntitiesCommand(
   document: DiagramDocument,
   ids: readonly EntityId[],
 ): Extract<DocumentCommand, { readonly type: "remove-entities" }> {
@@ -122,11 +123,18 @@ export function createRemoveEntitiesCommand(
   };
 }
 
+export function createRemoveEntitiesCommand(
+  document: DiagramDocument,
+  ids: readonly EntityId[],
+): Extract<DocumentCommand, { readonly type: "remove-entities" }> {
+  return createOwnedRemoveEntitiesCommand(snapshotDocument(document), [...ids]);
+}
+
 function applyRemoveEntities(
   document: DiagramDocument,
   command: Extract<DocumentCommand, { readonly type: "remove-entities" }>,
 ): DiagramDocument {
-  const expected = createRemoveEntitiesCommand(document, command.ids);
+  const expected = createOwnedRemoveEntitiesCommand(document, command.ids);
   if (!structuralEqual(command.removed, expected.removed)) {
     throw new CommandError("invalid-result");
   }
@@ -231,7 +239,7 @@ function applyReplaceDocument(
   return assertValidResult(command.after);
 }
 
-export function applyCommand(
+function applyOwnedCommand(
   document: DiagramDocument,
   command: DocumentCommand,
 ): DiagramDocument {
@@ -249,14 +257,14 @@ export function applyCommand(
   }
 }
 
-export function invertCommand(
+function invertOwnedCommand(
   document: DiagramDocument,
   command: DocumentCommand,
 ): DocumentCommand {
-  const changed = applyCommand(document, command);
+  const changed = applyOwnedCommand(document, command);
   switch (command.type) {
     case "add-entities":
-      return createRemoveEntitiesCommand(changed, [
+      return createOwnedRemoveEntitiesCommand(changed, [
         ...command.vertices.map(({ id }) => id),
         ...command.edges.map(({ id }) => id),
       ]);
@@ -289,4 +297,24 @@ export function invertCommand(
         after: document,
       };
   }
+}
+
+export function applyCommand(
+  document: DiagramDocument,
+  command: DocumentCommand,
+): DiagramDocument {
+  return applyOwnedCommand(
+    snapshotDocument(document),
+    snapshotCommand(command),
+  );
+}
+
+export function invertCommand(
+  document: DiagramDocument,
+  command: DocumentCommand,
+): DocumentCommand {
+  return invertOwnedCommand(
+    snapshotDocument(document),
+    snapshotCommand(command),
+  );
 }

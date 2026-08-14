@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "appleTeamId": "SYNTHETIC1",
+  "devices": [
+    {
+      "alias": "example-ipad",
+      "platform": "ios",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "modelContains": "Example iPad"
+    },
+    {
+      "alias": "example-iphone",
+      "platform": "ios",
+      "id": "00000000-0000-0000-0000-000000000002",
+      "modelContains": "Example iPhone"
+    },
+    {
+      "alias": "example-android-tablet",
+      "platform": "android",
+      "id": "synthetic-tablet-serial",
+      "modelContains": "EXAMPLE_TABLET"
+    },
+    {
+      "alias": "example-android-phone",
+      "platform": "android",
+      "id": "synthetic-phone-serial",
+      "modelContains": "EXAMPLE_PHONE"
+    }
+  ]
+}

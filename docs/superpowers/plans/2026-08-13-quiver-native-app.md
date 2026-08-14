@@ -188,23 +188,36 @@ git commit -m "feat(mobile): add adaptive library and editor shell"
 
 **Files:**
 - Create: `apps/mobile/src/persistence/schema.ts`
+- Create: `apps/mobile/src/persistence/sqliteAdapter.ts`
 - Create: `apps/mobile/src/persistence/DocumentRepository.ts`
 - Create: `apps/mobile/src/persistence/RepositoryProvider.tsx`
+- Create: `apps/mobile/src/persistence/documentStore.ts`
 - Create: `apps/mobile/src/persistence/useDocuments.ts`
 - Create: `apps/mobile/src/persistence/autosave.ts`
+- Create: `apps/mobile/__tests__/persistence/sqliteAdapter.test.ts`
 - Create: `apps/mobile/__tests__/persistence/repository.test.ts`
 - Create: `apps/mobile/__tests__/persistence/autosave.test.ts`
 - Modify: `apps/mobile/src/library/LibraryScreen.tsx`
+- Modify: `apps/mobile/app/_layout.tsx`
+- Modify: `apps/mobile/app/index.tsx`
 
 **Interfaces:**
 - Consumes: core native codec and `DiagramDocument`.
 - Produces: `DocumentRepository` methods `initialize`, `list`, `read`, `create`, `save`, `rename`, `duplicate`, `trash`, `restore`, `purgeExpired`, `snapshot`; `createAutosaveController`.
 
+Core Task 5 is a hard production dependency. Tests may inject a `NativeDocumentCodec`, but mobile must not
+duplicate native JSON parsing or ship production wiring until core exports `encodeNativeDocument`,
+`decodeNativeDocument`, and their final diagnostic/result types.
+
 - [ ] **Step 1: Write failing repository and recovery tests**
 
-Use an injected SQLite adapter/in-memory Expo SQLite database. Assert CRUD order by `updated_at`, unique
-duplicate title, trash invisibility and restore, 30-day purge, explicit snapshot retention, corrupt latest
-blob fallback to newest valid snapshot, and transaction rollback on write failure.
+Use an injected adapter backed in Jest by Node's built-in `node:sqlite` `DatabaseSync(":memory:")`; Expo's
+server shim is a no-op and is not a database test double. Assert optimistic revision conflicts, CRUD order
+by `updated_at DESC, id ASC`, NFC/case-insensitive unique duplicate titles (`Title copy`, then
+`Title copy 2`), trash invisibility and restore, inclusive 30-day purge, denormalized counts, metadata-only
+viewport save, last-open cleanup, explicit five-snapshot retention, corrupt latest-body fallback through
+newest valid snapshot, typed unrecoverable corruption, post-commit notification, and complete rollback on
+write/snapshot failure. Capture injected time once per operation.
 
 - [ ] **Step 2: Implement the versioned WAL schema**
 
@@ -216,6 +229,8 @@ CREATE TABLE IF NOT EXISTS documents (
   body TEXT NOT NULL,
   preview BLOB,
   viewport TEXT,
+  vertex_count INTEGER NOT NULL,
+  edge_count INTEGER NOT NULL,
   revision INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
@@ -228,25 +243,64 @@ CREATE TABLE IF NOT EXISTS snapshots (
   created_at INTEGER NOT NULL,
   PRIMARY KEY (document_id, revision)
 );
+CREATE TABLE IF NOT EXISTS app_state (
+  key TEXT PRIMARY KEY NOT NULL,
+  value TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS documents_active_updated
+  ON documents(trashed_at, updated_at DESC, id ASC);
+PRAGMA user_version = 1;
 ```
 
-Keep only five snapshots per document. Database time and ID generation are injected in tests.
+Reject future schema versions. Set WAL outside a transaction. The production adapter wraps Expo 57
+`withExclusiveTransactionAsync`, executes every transactional query through its callback `tx`, sets
+`busy_timeout = 5000` on that connection before the first write, never nests transactions, and serializes
+repository writes through a JS promise queue. Bind all values; only static DDL may use `execAsync`.
+The injected `SqliteAdapter` exposes `exec`, `run`, `first`, `all`, and `transaction(work(tx))` with the same
+contract in production and Jest.
+
+Keep only the five highest snapshot revisions. `save` requires `expectedRevision`, validates/encodes before
+opening the transaction, updates with `WHERE id = ? AND revision = ?`, and returns the new revision or a
+typed conflict. `rename` changes the encoded document and metadata together; `duplicate` decodes, assigns a
+new ID/title, re-encodes, and starts at revision zero. Snapshotting a save is atomic with it via
+`snapshot: "before" | "after" | "none"`. `read` never overwrites a corrupt latest body: return typed
+`current`, `recovered`, or `corrupt` results while scanning snapshots newest first. Explicitly delete
+snapshots before purged documents and clear matching `last_open_document_id` app state in the same
+transaction. Notify subscribers once only after commit. Database time, ID generation, and codec are
+injected in tests.
 
 - [ ] **Step 3: Implement autosave state machine**
 
-`createAutosaveController({ delayMs: 350, save })` exposes `markDirty(document)`, `flush()`, `dispose()`,
-and status subscription with `saved | dirty | saving | failed`. New mutations coalesce; one retry occurs
-after 1 second and one after 4 seconds while foregrounded. Leaving/backgrounding calls `flush`.
+`createAutosaveController({ delayMs: 350, save })` exposes `markDirty(document)`, async `flush()`,
+`setForeground(active)`, `getSnapshot()`, `subscribe(listener)`, and `dispose()`, with
+`saved | dirty | saving | failed`. Keep one save in flight and use generation numbers so stale completions
+cannot mark newer data saved. Ordinary mutations coalesce to the newest document, but exact snapshot
+boundary generations remain ordered. Make three total attempts: initial, then after 1 second and 4 seconds;
+status is `failed` during backoff. A new mutation cancels retry timing and restarts its 350 ms debounce.
+`flush()` cancels timers, awaits the in-flight save, drains the newest pending generation, and rejects if
+that save fails. Backgrounding pauses retry timers but retains dirty state; an explicit background flush
+still attempts once, and foregrounding resumes the remaining retry. Dispose cancels timers/listeners but
+does not abort an in-flight transaction or silently discard dirty data. Treat only AppState `active` as
+foreground, and do not leave/dispose a dirty editor unless flush succeeds or the UI retains the session and
+shows “Not saved”. Test exact fake-timer boundaries, mutation during save, stale completion, flush failure,
+foreground pause/resume, disposal, and snapshot barriers.
 
 - [ ] **Step 4: Connect the library and verify**
 
+Keep `LibraryScreen` presentational. Replace the placeholder provider in `_layout.tsx`, wire the repository
+at `app/index.tsx`, and keep one stable repository/store instance in context. Implement the document list
+store outside React and consume it with `useSyncExternalStore`; coalesce refreshes, discard stale async
+responses, and map raw timestamps/counts into `LibraryDocumentSummary` only at the hook/route boundary.
+Component tests inject the repository/store and never initialize Expo SQLite.
+
 Run: `npm test -w @quiver/mobile -- --runInBand __tests__/persistence`  
-Expected: all CRUD, rollback, recovery, and fake-timer autosave cases pass.
+Expected: real-SQL CRUD/revision/rollback/recovery, provider subscription isolation, and all autosave race/
+fake-timer cases pass.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add apps/mobile/src/persistence apps/mobile/src/library apps/mobile/__tests__/persistence
+git add apps/mobile/app/_layout.tsx apps/mobile/app/index.tsx apps/mobile/src/persistence apps/mobile/src/library apps/mobile/__tests__/persistence
 git commit -m "feat(mobile): persist and recover local diagrams"
 ```
 
@@ -267,8 +321,10 @@ git commit -m "feat(mobile): persist and recover local diagrams"
 
 Assert select/extend/toggle/clear, cascade delete, undo/redo, transaction merging, viewport persistence without
 history, dirty autosave after document commands only, and that a selector for vertex A is not notified by
-a label update to unrelated vertex B. Assert a snapshot is requested on the 25th committed transaction and
-before replace/import, but not for viewport changes.
+a label update to unrelated vertex B. Assert the exact 25th committed document is queued as an atomic
+`snapshot: "after"` save, and replace/import queues the exact prior body as `snapshot: "before"` with the
+replacement; neither may snapshot an older debounced row. Viewport changes use a metadata-only save and do
+not create a document revision or snapshot.
 
 - [ ] **Step 2: Define the store contract**
 
@@ -297,8 +353,10 @@ export interface EditorSessionActions {
 
 Keep actions outside state snapshots, use shallow/identity-aware selectors, freeze documents in development,
 and expose transient gesture preview through a separate Reanimated controller rather than Zustand. Count
-committed command transactions and request a repository snapshot after every 25 and immediately before
-document replacement/import; viewport-only changes do not increment the counter.
+committed command transactions and send the exact boundary document through the serialized autosave queue
+as an atomic `save(..., { snapshot: "after" })` every 25 transactions. Replacement/import atomically saves
+the new document with `snapshot: "before"` for the prior body. Never call `snapshot(id)` independently at a
+debounce boundary; viewport-only changes do not increment the counter and use metadata-only persistence.
 
 - [ ] **Step 4: Verify and commit**
 

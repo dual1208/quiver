@@ -334,10 +334,11 @@ JSON. Tests must decode all four and re-encode to a semantically equal document.
 - [ ] **Step 2: Write failing UTF-8, legacy, and malformed-input tests**
 
 Cover `\\alpha`, emoji, Japanese text, unpadded base64, a raw `+` in a URL payload, query-over-fragment
-precedence, a payload containing legacy `length`, a payload containing `style.body.level`, explicit visual
-level precedence, special style names, endpoint alignment, truncated arrays, forward/self/invalid indices,
-duplicate positions, safe-integer overflow, prototype-shaped keys, invalid UTF-8, input over 5 MB, and
-nesting over 64. Assert diagnostics contain a stable code and original wire cell index.
+precedence, current inline `macros` precedence over `macro_url`, a payload containing legacy `length`, a
+payload containing `style.body.level`, explicit visual level precedence, special style names, endpoint
+alignment, truncated arrays, forward/self/invalid indices, duplicate positions, safe-integer overflow,
+prototype-shaped keys, invalid UTF-8, input over 5 MB, and nesting over 64. Assert diagnostics contain a
+stable code and original wire cell index.
 
 - [ ] **Step 3: Implement byte-safe base64 and URL parsing**
 
@@ -369,6 +370,14 @@ structural level. Import validates and converts legacy `length` to symmetric `sh
 `shorten` is absent. Encoding computes its option delta against the edge's derived wire defaults, never
 emits `shape`, omits radius/angle for Bézier and curve for arc, and never mutates the document.
 
+Because `shape` is not representable on the wire, canonical export requires self-loops to be arcs and
+non-loops to be Béziers. Before emitting, enforce every upstream wire domain even when the general native
+model is more expressive: label position is a safe integer in `[0,100]`; integer wire geometry values are
+safe integers; shortening and opaque HSLA components use accepted ranges/precision. A successful encoder
+call must decode with no diagnostics and must never manufacture a payload upstream will skip. Preserve an
+odd legacy `length` migration through a valid compatible representation or reject it explicitly rather
+than emitting fractional `shorten` values that upstream rejects.
+
 `encodeQuiverSelection` includes the transitive endpoint closure and returns
 `{ payload, selectedWireIndices }`, because v0 has no selection marker and a payload alone cannot
 distinguish originally selected cells from included dependencies. Decoder results retain a stable
@@ -382,7 +391,8 @@ Run: `npm test -w @quiver/core -- test/codec/quiver.test.ts`
 Expected: all upstream fixtures decode, encode, and re-decode with semantic equality; empty documents
 format as the bare canonical `https://q.uiver.app/` URL; malformed cases return typed diagnostics without
 mutation or code execution. Formatting uses `https://q.uiver.app/#q=...`, omits the default KaTeX renderer,
-and preserves `r=typst`/encoded `macro_url` metadata without fetching it.
+and preserves `r=typst`/encoded inline `macros` or nonblank `macro_url` metadata without fetching it.
+Inline definitions win when both sources are supplied, matching current upstream Quiver.
 
 - [ ] **Step 6: Commit**
 

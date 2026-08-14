@@ -236,9 +236,11 @@ The native schema is readable JSON with a media type of `application/vnd.quiver.
 `.quiver.json` extension. Schema migrations are pure, ordered functions with fixture coverage.
 
 The compatibility codec exactly accepts Quiver's current version-zero array payload, including legacy
-`length` conversion, edge-level migration, colours, label alignment, higher cells, macro URL, and renderer
-selection. Compatibility export emits a URL that opens on `https://q.uiver.app/`; native-only metadata is
-excluded. Round trips are compared semantically rather than by insignificant JSON key order.
+`length` conversion, edge-level migration, colours, label alignment, higher cells, inline `macros`, macro
+URL fallback, and renderer selection. Inline definitions take precedence over a macro URL, matching current
+upstream behavior. Compatibility export emits a URL that opens on `https://q.uiver.app/`; native-only
+metadata is excluded. Every successful export must be accepted by both this decoder and upstream Quiver;
+round trips are compared semantically rather than by insignificant JSON key order.
 
 Imports are size-limited to 5 MB and macro downloads to 1 MB. Macro URLs require HTTPS except for local
 development. Network content is treated as text, parsed with explicit limits, and never executed.
@@ -375,4 +377,3 @@ limited to trusted branches or explicit maintainers' dispatches.
 - [React Native Gesture Handler](https://docs.swmansion.com/react-native-gesture-handler/)
 - [React Native Skia canvas](https://shopify.github.io/react-native-skia/docs/canvas/overview/)
 - [GitHub self-hosted runner management](https://docs.github.com/en/actions/how-tos/manage-runners/self-hosted-runners)
-

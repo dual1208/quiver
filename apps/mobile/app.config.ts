@@ -34,10 +34,13 @@ export default ({ config }: ConfigContext): ExpoConfig => {
     ...config,
     name: "Quiver",
     slug: "quiver-native",
+    version: "1.0.0",
     scheme: "quiver",
     orientation: "default",
+    userInterfaceStyle: "automatic",
     icon: "./assets/images/icon.png",
     ios: {
+      buildNumber: "1",
       bundleIdentifier: "app.quiver.native",
       icon: "./assets/expo.icon",
       infoPlist: {
@@ -46,6 +49,8 @@ export default ({ config }: ConfigContext): ExpoConfig => {
       supportsTablet: true,
     },
     android: {
+      versionCode: 1,
+      softwareKeyboardLayoutMode: "resize",
       adaptiveIcon: {
         backgroundColor: "#191919",
         backgroundImage: "./assets/images/android-icon-background.png",

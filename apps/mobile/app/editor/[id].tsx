@@ -1,137 +1,124 @@
-import { router } from "expo-router";
-import { StyleSheet, Text, View } from "react-native";
-import { EditorScreen } from "../../src/editor/EditorScreen";
+import type { DiagramDocument } from "@quiver/core";
+import { router, useLocalSearchParams } from "expo-router";
+import { useCallback, useEffect, useState } from "react";
+import { ActivityIndicator, Pressable, StyleSheet, Text, View } from "react-native";
+import { diagramRepository } from "../../src/data";
+import { DiagramEditorView } from "../../src/editor/DiagramEditorView";
 import { useTheme } from "../../src/theme/ThemeProvider";
 
-function noOp() {}
-
-function returnToLibrary() {
-  router.back();
-}
-
-function CanvasPlaceholder() {
-  const theme = useTheme();
-
-  return (
-    <View
-      accessibilityLabel="Empty diagram canvas"
-      style={[styles.canvas, { backgroundColor: theme.colors.canvas }]}
-      testID="editor-canvas"
-    >
-      <View
-        accessibilityElementsHidden
-        importantForAccessibility="no-hide-descendants"
-        style={[
-          styles.originHorizontal,
-          { backgroundColor: theme.colors.grid },
-        ]}
-      />
-      <View
-        accessibilityElementsHidden
-        importantForAccessibility="no-hide-descendants"
-        style={[styles.originVertical, { backgroundColor: theme.colors.grid }]}
-      />
-      <View
-        style={[
-          styles.canvasHint,
-          {
-            backgroundColor: theme.colors.surface,
-            borderColor: theme.colors.border,
-          },
-        ]}
-      >
-        <Text
-          allowFontScaling
-          maxFontSizeMultiplier={1.8}
-          style={[
-            theme.typography.bodyStrong,
-            { color: theme.colors.textPrimary },
-          ]}
-        >
-          Double-tap to place an object
-        </Text>
-        <Text
-          allowFontScaling
-          maxFontSizeMultiplier={1.8}
-          style={[theme.typography.body, { color: theme.colors.textSecondary }]}
-        >
-          Pinch to zoom · two fingers to pan
-        </Text>
-      </View>
-    </View>
-  );
-}
-
-function InspectorPlaceholder() {
-  const theme = useTheme();
-
-  return (
-    <View style={styles.inspectorContent}>
-      <Text
-        allowFontScaling
-        maxFontSizeMultiplier={1.8}
-        style={[theme.typography.body, { color: theme.colors.textSecondary }]}
-      >
-        Select an object or arrow to edit its label and appearance.
-      </Text>
-    </View>
-  );
-}
+type LoadState =
+  | { readonly status: "loading" }
+  | { readonly status: "ready"; readonly document: DiagramDocument }
+  | { readonly status: "error"; readonly message: string };
 
 export default function EditorRoute() {
+  const { id } = useLocalSearchParams<{ id: string }>();
+  const theme = useTheme();
+  const [reloadKey, setReloadKey] = useState(0);
+  const [state, setState] = useState<LoadState>({ status: "loading" });
+
+  useEffect(() => {
+    let active = true;
+    setState({ status: "loading" });
+
+    void (async () => {
+      try {
+        const record =
+          id === "new"
+            ? await diagramRepository.createUntitled()
+            : await diagramRepository.get(id);
+        if (!active) {
+          return;
+        }
+        if (record === null) {
+          setState({ status: "error", message: "This diagram no longer exists." });
+          return;
+        }
+        setState({ status: "ready", document: record.document });
+        if (id === "new") {
+          router.setParams({ id: record.document.id });
+        }
+      } catch (error) {
+        if (active) {
+          setState({
+            status: "error",
+            message: error instanceof Error ? error.message : "Could not open the diagram.",
+          });
+        }
+      }
+    })();
+
+    return () => {
+      active = false;
+    };
+  }, [id, reloadKey]);
+
+  const save = useCallback((document: DiagramDocument) => {
+    return diagramRepository.save(document).then(() => undefined);
+  }, []);
+
+  if (state.status === "ready") {
+    return <DiagramEditorView initialDocument={state.document} onSave={save} />;
+  }
+
   return (
-    <EditorScreen
-      canRedo
-      canUndo
-      canvas={<CanvasPlaceholder />}
-      inspector={<InspectorPlaceholder />}
-      onBack={returnToLibrary}
-      onConnectSelection={noOp}
-      onCreateVertex={noOp}
-      onFitToContent={noOp}
-      onOverflow={noOp}
-      onRedo={noOp}
-      onSelectMode={noOp}
-      onShare={noOp}
-      onUndo={noOp}
-      selectionState={{ kind: "none", count: 0 }}
-      title="Untitled diagram"
-    />
+    <View style={[styles.center, { backgroundColor: theme.colors.background }]}>
+      {state.status === "loading" ? (
+        <>
+          <ActivityIndicator color={theme.colors.primary} size="large" />
+          <Text style={[theme.typography.body, { color: theme.colors.textSecondary }]}>
+            Opening diagram…
+          </Text>
+        </>
+      ) : (
+        <>
+          <Text style={[theme.typography.title, { color: theme.colors.textPrimary }]}>
+            Could not open diagram
+          </Text>
+          <Text style={[styles.message, theme.typography.body, { color: theme.colors.textSecondary }]}>
+            {state.message}
+          </Text>
+          <View style={styles.actions}>
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => setReloadKey((value) => value + 1)}
+              style={[styles.button, { backgroundColor: theme.colors.primary }]}
+            >
+              <Text style={[theme.typography.bodyStrong, { color: theme.colors.onPrimary }]}>Retry</Text>
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => router.back()}
+              style={[styles.button, { borderColor: theme.colors.border, borderWidth: 1 }]}
+            >
+              <Text style={[theme.typography.bodyStrong, { color: theme.colors.textPrimary }]}>Library</Text>
+            </Pressable>
+          </View>
+        </>
+      )}
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  canvas: {
+  actions: {
+    flexDirection: "row",
+    gap: 10,
+  },
+  button: {
+    borderRadius: 999,
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+  },
+  center: {
     alignItems: "center",
     flex: 1,
+    gap: 16,
     justifyContent: "center",
-    overflow: "hidden",
-    position: "relative",
+    padding: 24,
   },
-  canvasHint: {
-    alignItems: "center",
-    borderRadius: 18,
-    borderWidth: StyleSheet.hairlineWidth,
-    gap: 4,
-    maxWidth: 360,
-    paddingHorizontal: 20,
-    paddingVertical: 16,
-  },
-  inspectorContent: {
-    paddingTop: 4,
-  },
-  originHorizontal: {
-    height: StyleSheet.hairlineWidth,
-    left: 0,
-    position: "absolute",
-    right: 0,
-    top: "50%",
-  },
-  originVertical: {
-    bottom: 0,
-    left: "50%",
-    position: "absolute",
-    top: 0,
-    width: StyleSheet.hairlineWidth,
+  message: {
+    maxWidth: 420,
+    textAlign: "center",
   },
 });

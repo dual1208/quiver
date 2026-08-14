@@ -125,6 +125,8 @@ git commit -m "build(lab): add typed physical device inventory"
 - Create: `scripts/lab/src/quiver_lab/android.py`
 - Create: `scripts/lab/tests/test_android.py`
 - Create: `device-tests/maestro/smoke.yaml`
+- Modify: `scripts/lab/src/quiver_lab/process.py`
+- Modify: `scripts/lab/tests/test_process.py`
 - Modify: `scripts/lab/src/quiver_lab/cli.py`
 - Modify: `justfile`
 
@@ -136,7 +138,14 @@ git commit -m "build(lab): add typed physical device inventory"
 
 Assert every ADB call includes `-s <serial>`, install uses `install -r -t`, clean-state smoke uses
 `pm clear app.quiver.native`, launch uses `am start -W`, Maestro receives `--udid`, build selects JDK 17,
-and no command is launched for offline/unauthorized/model-mismatched devices.
+and no command is launched for offline/unauthorized/model-mismatched devices. Resolve canonical executable
+paths for npm, JDK 17, aapt2, and Maestro at preflight before mutation; validate the generated Gradle wrapper
+as a regular nonsymlink executable immediately after prebuild.
+
+Every subprocess has an action-specific wall-clock deadline, TERM/kill escalation for its process group,
+fixed-size streaming into a complete mode-0600 redacted log, and a bounded in-memory output. Timeout or
+output overflow fails closed. Tests include a silent hang, TERM-resistant child, huge newline-free output,
+and a secret split across read chunks.
 
 - [ ] **Step 2: Implement deterministic Android build**
 
@@ -149,13 +158,31 @@ apps/mobile/android/gradlew --no-daemon --stacktrace :app:assembleRelease
 Set `JAVA_HOME` to the validated JDK 17 path and `ORG_GRADLE_PROJECT_org.gradle.java.home` consistently.
 The release-like local flavor uses the checked-in/debug keystore only for lab distribution, embeds the JS
 bundle, disables Metro, and outputs `apps/mobile/android/app/build/outputs/apk/release/app-release.apk`.
-Hash it with SHA-256 and record package/version via `aapt2 dump badging`.
+Before Gradle, reject/remove only that exact generated APK so a stale same-commit output cannot masquerade
+as fresh. Require one uncontradicted `BUILD SUCCESSFUL` claim and a newly created regular output; reject
+`BUILD FAILED` even with exit zero. After prebuild and before Gradle, embed canonical
+`assets/quiver-build.json` containing the requested commit and verify exactly one byte-identical entry in
+the resulting ZIP. Hash the APK with SHA-256 and record package/version via fail-closed whole-output
+`aapt2 dump badging` parsing.
+
+Publish the APK as a read-only no-overwrite copy in the protected run. Reuse takes the prior run's final
+producer `manifest.json`, not an arbitrary APK: read canonical nonsymlink bytes once, require a coherent
+passing fresh-build schema/commit/hash/package/version, copy and hash-lock both manifest and APK into the
+consumer run, then revalidate the embedded commit and metadata. Bind path-consuming external tools to an
+already-open validated APK descriptor where supported so a swap-and-restore pathname race cannot change
+the inspected or installed bytes.
 
 - [ ] **Step 3: Implement exact-device install and launch**
 
-Before install, query OS/model/ABI/battery/storage and save them. Install with `adb -s SERIAL install -r -t
-APK`, verify `pm path app.quiver.native`, force-stop, launch the main activity with `am start -W`, require
-`Status: ok`, and scan a bounded post-launch logcat window for fatal exceptions.
+Before install, query OS/model/ABI/battery/storage with exact whole-output grammars: reject duplicate,
+shadow, impossible, or failure claims; require battery in `[0,100]`; and compare the normalized model fact
+to the already guarded physical target. Install with `adb -s SERIAL install -r -t APK`, require one
+uncontradicted success, and verify canonical `pm path` plus package version. Pull the installed base APK to
+a protected temporary file, require its SHA-256 to equal the validated build hash, record that digest, and
+remove the raw pull. This end-to-end check is mandatory even when a descriptor path is used for install.
+Require expected-silent force-stop/log-clear outputs to be empty, launch the main activity with
+`am start -W`, require one canonical `Status: ok` and `TotalTime`, resolve one positive PID, and scan a
+PID-filtered 500-line logcat under a wall-clock deadline for fatal exceptions.
 
 - [ ] **Step 4: Write the cross-device Maestro flow**
 
@@ -195,6 +222,10 @@ appId: app.quiver.native
 
 If canvas actions require deterministic positions, the app exposes accessibility buttons only in the lab
 build variant; they call production action factories and remain hidden from normal layout/accessibility.
+Run Maestro 2.8 with `--format JUNIT --output REPORT` and a fresh protected test-output directory. Passing
+smoke requires a regular nonsymlink JUnit report with at least one executed test and zero
+failures/errors/skips plus exactly one retained `android-export.png`; record paths and SHA-256 values. An
+exit-zero no-op or empty output directory fails.
 
 - [ ] **Step 5: Verify both connected Android targets and commit**
 
@@ -202,14 +233,15 @@ Run:
 
 ```bash
 uv run --project scripts/lab quiver-lab android all --device android-tablet
-uv run --project scripts/lab quiver-lab android all --device android-phone --reuse-build
+uv run --project scripts/lab quiver-lab android all --device android-phone --build-manifest /absolute/path/to/tablet/run/manifest.json
 ```
 
-Expected: identical APK hash, installed package/version verified, both Maestro flows pass, screenshots and
-logs recorded per device.
+Expected: identical local and pulled-installed APK hashes, installed package/version verified, both Maestro
+JUnit flows pass, and hashed screenshots/logs are recorded per device. A passing `all` manifest must itself
+be accepted as a coherent producer for the second device.
 
 ```bash
-git add scripts/lab/src/quiver_lab/android.py scripts/lab/tests/test_android.py scripts/lab/src/quiver_lab/cli.py device-tests/maestro justfile
+git add scripts/lab/src/quiver_lab/android.py scripts/lab/src/quiver_lab/process.py scripts/lab/tests/test_android.py scripts/lab/tests/test_process.py scripts/lab/src/quiver_lab/cli.py device-tests/maestro justfile
 git commit -m "build(lab): verify Android physical devices"
 ```
 

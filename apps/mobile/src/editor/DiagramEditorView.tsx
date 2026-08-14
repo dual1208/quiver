@@ -68,8 +68,30 @@ export function DiagramEditorView({
 
   const createVertexAt = useCallback(
     (point: { x: number; y: number }) => {
-      editor.createVertex(point);
+      const id = editor.createVertex(point);
       void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      return id;
+    },
+    [editor],
+  );
+
+  const beginConnectionAt = useCallback(
+    (point: { x: number; y: number }) => {
+      const id = editor.beginConnection(point);
+      void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      return id;
+    },
+    [editor],
+  );
+
+  const completeConnectionAt = useCallback(
+    (sourceId: EntityId, point: { x: number; y: number }) => {
+      const edgeId = editor.completeConnection(sourceId, point);
+      if (edgeId !== null) {
+        void Haptics.notificationAsync(
+          Haptics.NotificationFeedbackType.Success,
+        );
+      }
     },
     [editor],
   );
@@ -166,7 +188,8 @@ export function DiagramEditorView({
       canvas={
         <DiagramCanvas
           document={editor.document}
-          onCreateVertex={createVertexAt}
+          onBeginConnection={beginConnectionAt}
+          onCompleteConnection={completeConnectionAt}
           onMoveVertex={editor.moveVertex}
           onSelectionChange={handleCanvasSelection}
           ref={canvasRef}

@@ -1,6 +1,7 @@
 import type { DiagramDocument, EntityId, GridPoint } from "@quiver/core";
 import {
   Canvas,
+  Circle,
   DashPathEffect,
   Group,
   matchFont,
@@ -29,12 +30,16 @@ import {
   Gesture,
   GestureDetector,
 } from "react-native-gesture-handler";
+import { useSharedValue } from "react-native-reanimated";
+import { scheduleOnRN } from "react-native-worklets";
 import { useTheme } from "../../theme/ThemeProvider";
 import {
   buildDiagramGeometry,
   clamp,
   clampViewportTranslation,
+  connectionPreviewPath,
   DOCUMENT_GRID_SIZE,
+  documentPointToWorldCenter,
   fitViewportToBounds,
   hitTestEntity,
   hitTestVertex,
@@ -42,7 +47,9 @@ import {
   MAX_VIEWPORT_SCALE,
   MIN_VIEWPORT_SCALE,
   screenToDocumentPoint,
+  screenToWorldPoint,
   type DiagramGeometry,
+  type WorldPoint,
 } from "./geometry";
 
 type Viewport = Readonly<{
@@ -53,11 +60,21 @@ type Viewport = Readonly<{
 
 type CanvasSize = Readonly<{ width: number; height: number }>;
 
+type ConnectionPreviewState = Readonly<{
+  sourceId: EntityId;
+  sourcePoint: GridPoint;
+  start: WorldPoint;
+  pointer: WorldPoint;
+  targetPoint: GridPoint;
+  moved: boolean;
+}>;
+
 export type DiagramCanvasProps = Readonly<{
   document: DiagramDocument;
   selectedIds: readonly EntityId[];
   onSelectionChange: (ids: readonly EntityId[]) => void;
-  onCreateVertex: (point: GridPoint) => void;
+  onBeginConnection: (point: GridPoint) => EntityId;
+  onCompleteConnection: (sourceId: EntityId, point: GridPoint) => void;
   onMoveVertex: (id: EntityId, point: GridPoint) => void;
   style?: StyleProp<ViewStyle>;
   testID?: string;
@@ -70,6 +87,19 @@ export type DiagramCanvasHandle = Readonly<{
 
 function samePoint(left: GridPoint, right: GridPoint): boolean {
   return left.x === right.x && left.y === right.y;
+}
+
+function snappedPoint(point: GridPoint): GridPoint {
+  return { x: Math.round(point.x), y: Math.round(point.y) };
+}
+
+function screenDistance(left: WorldPoint, right: WorldPoint): number {
+  return Math.hypot(left.x - right.x, left.y - right.y);
+}
+
+function isBulletLabel(label: string): boolean {
+  const trimmed = label.trim();
+  return trimmed === "\\bullet" || trimmed === "bullet" || trimmed === "•";
 }
 
 function isDashedBody(name: string): boolean {
@@ -102,7 +132,8 @@ export const DiagramCanvas = forwardRef<
     document,
     selectedIds,
     onSelectionChange,
-    onCreateVertex,
+    onBeginConnection,
+    onCompleteConnection,
     onMoveVertex,
     style,
     testID = "diagram-canvas",
@@ -128,6 +159,8 @@ export const DiagramCanvas = forwardRef<
     readonly id: EntityId;
     readonly point: GridPoint;
   } | null>(null);
+  const [connectionPreview, setConnectionPreview] =
+    useState<ConnectionPreviewState | null>(null);
   const viewportRef = useRef(viewport);
   const sizeRef = useRef(size);
   const geometryRef = useRef<DiagramGeometry | null>(null);
@@ -139,6 +172,16 @@ export const DiagramCanvas = forwardRef<
   } | null>(null);
   const panLastRef = useRef({ x: 0, y: 0 });
   const pinchLastScaleRef = useRef(1);
+  const connectionRef = useRef<ConnectionPreviewState | null>(null);
+  const connectionSessionRef = useRef(0);
+  const lastUpAt = useSharedValue(0);
+  const lastUpX = useSharedValue(0);
+  const lastUpY = useSharedValue(0);
+  const connectionDownAt = useSharedValue(0);
+  const connectionDownX = useSharedValue(0);
+  const connectionDownY = useSharedValue(0);
+  const connectionMode = useSharedValue(0);
+  const connectionSession = useSharedValue(0);
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
 
   const geometry = useMemo(
@@ -248,6 +291,254 @@ export const DiagramCanvas = forwardRef<
     [setViewport],
   );
 
+  const documentPointFromScreen = useCallback((screen: WorldPoint) => {
+    const current = viewportRef.current;
+    return screenToDocumentPoint(
+      screen,
+      current.translateX,
+      current.translateY,
+      current.scale,
+    );
+  }, []);
+
+  const setActiveConnection = useCallback(
+    (next: ConnectionPreviewState | null) => {
+      connectionRef.current = next;
+      setConnectionPreview(next);
+    },
+    [],
+  );
+
+  const cancelActiveConnection = useCallback(
+    (token: number) => {
+      if (connectionSessionRef.current !== token) {
+        return;
+      }
+      connectionSessionRef.current = 0;
+      setActiveConnection(null);
+    },
+    [setActiveConnection],
+  );
+
+  const beginSecondContact = useCallback(
+    (token: number, x: number, y: number) => {
+      const screen = { x, y };
+      const sourcePoint = snappedPoint(documentPointFromScreen(screen));
+      const sourceId = onBeginConnection(sourcePoint);
+      connectionSessionRef.current = token;
+      setActiveConnection({
+        sourceId,
+        sourcePoint,
+        start: screen,
+        pointer: screen,
+        targetPoint: sourcePoint,
+        moved: false,
+      });
+    },
+    [documentPointFromScreen, onBeginConnection, setActiveConnection],
+  );
+
+  const moveSecondContact = useCallback(
+    (token: number, x: number, y: number) => {
+      const active = connectionRef.current;
+      if (active === null || connectionSessionRef.current !== token) {
+        return;
+      }
+      const screen = { x, y };
+      setActiveConnection({
+        ...active,
+        pointer: screen,
+        targetPoint: snappedPoint(documentPointFromScreen(screen)),
+        moved: active.moved || screenDistance(active.start, screen) > 8,
+      });
+    },
+    [documentPointFromScreen, setActiveConnection],
+  );
+
+  const finishSecondContact = useCallback(
+    (token: number, x: number, y: number) => {
+      const active = connectionRef.current;
+      if (active === null || connectionSessionRef.current !== token) {
+        return;
+      }
+      const screen = { x, y };
+      if (active.moved || screenDistance(active.start, screen) > 8) {
+        onCompleteConnection(
+          active.sourceId,
+          snappedPoint(documentPointFromScreen(screen)),
+        );
+      }
+      connectionSessionRef.current = 0;
+      setActiveConnection(null);
+    },
+    [documentPointFromScreen, onCompleteConnection, setActiveConnection],
+  );
+
+  const connectionGesture = useMemo(
+    () =>
+      Gesture.Manual()
+        .shouldCancelWhenOutside(false)
+        .onTouchesDown((event, stateManager) => {
+          "worklet";
+          const touch = event.changedTouches[0];
+          if (event.numberOfTouches !== 1 || touch === undefined) {
+            const token = connectionSession.value;
+            const wasActive = connectionMode.value === 2;
+            connectionMode.value = 0;
+            lastUpAt.value = 0;
+            if (wasActive) {
+              scheduleOnRN(cancelActiveConnection, token);
+            }
+            stateManager.fail();
+            return;
+          }
+
+          const now = Date.now();
+          const dx = touch.x - lastUpX.value;
+          const dy = touch.y - lastUpY.value;
+          const secondContact =
+            lastUpAt.value > 0 &&
+            now - lastUpAt.value <= 280 &&
+            dx * dx + dy * dy <= 48 * 48;
+          connectionDownAt.value = now;
+          connectionDownX.value = touch.x;
+          connectionDownY.value = touch.y;
+
+          if (!secondContact) {
+            connectionMode.value = 1;
+            return;
+          }
+
+          lastUpAt.value = 0;
+          connectionMode.value = 2;
+          connectionSession.value += 1;
+          stateManager.activate();
+          scheduleOnRN(
+            beginSecondContact,
+            connectionSession.value,
+            touch.x,
+            touch.y,
+          );
+        })
+        .onTouchesMove((event, stateManager) => {
+          "worklet";
+          const touch = event.changedTouches[0];
+          if (event.numberOfTouches !== 1 || touch === undefined) {
+            const token = connectionSession.value;
+            const wasActive = connectionMode.value === 2;
+            connectionMode.value = 0;
+            lastUpAt.value = 0;
+            if (wasActive) {
+              scheduleOnRN(cancelActiveConnection, token);
+            }
+            stateManager.fail();
+            return;
+          }
+          const dx = touch.x - connectionDownX.value;
+          const dy = touch.y - connectionDownY.value;
+          if (connectionMode.value === 1) {
+            if (dx * dx + dy * dy > 8 * 8) {
+              connectionMode.value = 0;
+              lastUpAt.value = 0;
+              stateManager.fail();
+            }
+            return;
+          }
+          if (connectionMode.value === 2) {
+            scheduleOnRN(
+              moveSecondContact,
+              connectionSession.value,
+              touch.x,
+              touch.y,
+            );
+          }
+        })
+        .onTouchesUp((event, stateManager) => {
+          "worklet";
+          const touch = event.changedTouches[0];
+          if (touch === undefined) {
+            connectionMode.value = 0;
+            stateManager.fail();
+            return;
+          }
+          if (connectionMode.value === 2) {
+            const token = connectionSession.value;
+            connectionMode.value = 0;
+            scheduleOnRN(finishSecondContact, token, touch.x, touch.y);
+            stateManager.end();
+            return;
+          }
+
+          const now = Date.now();
+          const dx = touch.x - connectionDownX.value;
+          const dy = touch.y - connectionDownY.value;
+          const cleanFirstTap =
+            connectionMode.value === 1 &&
+            now - connectionDownAt.value <= 280 &&
+            dx * dx + dy * dy <= 8 * 8;
+          connectionMode.value = 0;
+          if (cleanFirstTap) {
+            lastUpAt.value = now;
+            lastUpX.value = touch.x;
+            lastUpY.value = touch.y;
+          } else {
+            lastUpAt.value = 0;
+          }
+          stateManager.fail();
+        })
+        .onTouchesCancelled((_event, stateManager) => {
+          "worklet";
+          const token = connectionSession.value;
+          const wasActive = connectionMode.value === 2;
+          connectionMode.value = 0;
+          lastUpAt.value = 0;
+          if (wasActive) {
+            scheduleOnRN(cancelActiveConnection, token);
+          }
+          stateManager.fail();
+        }),
+    [
+      beginSecondContact,
+      cancelActiveConnection,
+      connectionDownAt,
+      connectionDownX,
+      connectionDownY,
+      connectionMode,
+      connectionSession,
+      finishSecondContact,
+      lastUpAt,
+      lastUpX,
+      lastUpY,
+      moveSecondContact,
+    ],
+  );
+
+  const connectionVisual = useMemo(() => {
+    if (connectionPreview === null) {
+      return null;
+    }
+    const source = geometry.vertices.find(
+      (vertex) => vertex.id === connectionPreview.sourceId,
+    );
+    const sourceCenter =
+      source?.center ?? documentPointToWorldCenter(connectionPreview.sourcePoint);
+    const pointer = screenToWorldPoint(
+      connectionPreview.pointer,
+      viewport.translateX,
+      viewport.translateY,
+      viewport.scale,
+    );
+    return {
+      path: connectionPreviewPath(
+        sourceCenter,
+        source?.width === undefined ? 10 : source.width / 2,
+        source?.height === undefined ? 10 : source.height / 2,
+        pointer,
+      ),
+      targetCenter: documentPointToWorldCenter(connectionPreview.targetPoint),
+    };
+  }, [connectionPreview, geometry.vertices, viewport]);
+
   const singleTap = useMemo(
     () =>
       Gesture.Tap()
@@ -271,39 +562,6 @@ export const DiagramCanvas = forwardRef<
     [onSelectionChange],
   );
 
-  const doubleTap = useMemo(
-    () =>
-      Gesture.Tap()
-        .numberOfTaps(2)
-        .maxDelay(280)
-        .runOnJS(true)
-        .onEnd((event, success) => {
-          if (!success || geometryRef.current === null) {
-            return;
-          }
-          const current = viewportRef.current;
-          const hit = hitTestEntity(
-            geometryRef.current,
-            { x: event.x, y: event.y },
-            current.translateX,
-            current.translateY,
-            current.scale,
-            5,
-          );
-          if (hit === null) {
-            onCreateVertex(
-              screenToDocumentPoint(
-                { x: event.x, y: event.y },
-                current.translateX,
-                current.translateY,
-                current.scale,
-              ),
-            );
-          }
-        }),
-    [onCreateVertex],
-  );
-
   const vertexDrag = useMemo(
     () =>
       Gesture.Pan()
@@ -311,7 +569,10 @@ export const DiagramCanvas = forwardRef<
         .minDistance(5)
         .runOnJS(true)
         .onBegin((event) => {
-          if (geometryRef.current === null) {
+          if (
+            connectionRef.current !== null ||
+            geometryRef.current === null
+          ) {
             dragRef.current = null;
             return;
           }
@@ -333,6 +594,11 @@ export const DiagramCanvas = forwardRef<
           onSelectionChange([hit.id]);
         })
         .onUpdate((event) => {
+          if (connectionRef.current !== null) {
+            dragRef.current = null;
+            setDragPreview(null);
+            return;
+          }
           const drag = dragRef.current;
           if (drag === null) {
             return;
@@ -355,7 +621,11 @@ export const DiagramCanvas = forwardRef<
           const drag = dragRef.current;
           dragRef.current = null;
           setDragPreview(null);
-          if (drag !== null && !samePoint(drag.origin, drag.preview)) {
+          if (
+            connectionRef.current === null &&
+            drag !== null &&
+            !samePoint(drag.origin, drag.preview)
+          ) {
             onMoveVertex(drag.id, drag.preview);
           }
         }),
@@ -429,9 +699,9 @@ export const DiagramCanvas = forwardRef<
       Gesture.Simultaneous(
         twoFingerPan,
         pinch,
-        Gesture.Exclusive(vertexDrag, doubleTap, singleTap),
+        Gesture.Exclusive(connectionGesture, vertexDrag, singleTap),
       ),
-    [doubleTap, pinch, singleTap, twoFingerPan, vertexDrag],
+    [connectionGesture, pinch, singleTap, twoFingerPan, vertexDrag],
   );
 
   return (
@@ -457,14 +727,9 @@ export const DiagramCanvas = forwardRef<
                 path={geometry.gridPath}
                 strokeWidth={1}
                 style="stroke"
-              />
-              <Path
-                color={theme.colors.grid}
-                opacity={0.95}
-                path={geometry.axisPath}
-                strokeWidth={1.5}
-                style="stroke"
-              />
+              >
+                <DashPathEffect intervals={[8, 8]} phase={0} />
+              </Path>
 
               {geometry.edges.map((edge) => {
                 const selected = selectedSet.has(edge.id);
@@ -524,47 +789,100 @@ export const DiagramCanvas = forwardRef<
                 );
               })}
 
+              {connectionVisual?.path === null ||
+              connectionVisual === null ? null : (
+                <Group>
+                  <Circle
+                    color={theme.colors.selection}
+                    cx={connectionVisual.targetCenter.x}
+                    cy={connectionVisual.targetCenter.y}
+                    opacity={0.16}
+                    r={18}
+                  />
+                  <Circle
+                    color={theme.colors.selection}
+                    cx={connectionVisual.targetCenter.x}
+                    cy={connectionVisual.targetCenter.y}
+                    opacity={0.78}
+                    r={8}
+                    strokeWidth={2}
+                    style="stroke"
+                  />
+                  <Path
+                    color={theme.colors.selection}
+                    path={connectionVisual.path.path}
+                    strokeCap="round"
+                    strokeWidth={2.8}
+                    style="stroke"
+                  />
+                  <Path
+                    color={theme.colors.selection}
+                    path={connectionVisual.path.arrowhead}
+                    style="fill"
+                  />
+                </Group>
+              )}
+
               {geometry.vertices.map((vertex) => {
                 const selected = selectedSet.has(vertex.id);
+                const bullet = isBulletLabel(vertex.vertex.label);
                 return (
                   <Group key={vertex.id}>
-                    <RoundedRect
-                      color={
-                        selected
-                          ? theme.colors.primarySurface
-                          : theme.colors.surface
-                      }
-                      height={vertex.height}
-                      r={12}
-                      width={vertex.width}
-                      x={vertex.left}
-                      y={vertex.top}
-                    />
-                    <RoundedRect
-                      color={
-                        selected
-                          ? theme.colors.selection
-                          : theme.colors.textSecondary
-                      }
-                      height={vertex.height}
-                      r={12}
-                      strokeWidth={selected ? 3.2 : 1.6}
-                      style="stroke"
-                      width={vertex.width}
-                      x={vertex.left}
-                      y={vertex.top}
-                    />
-                    <SkiaText
-                      color={canvasColour(
-                        vertex.vertex.labelColour,
-                        theme.mode === "dark",
-                        theme.colors.textPrimary,
-                      )}
-                      font={vertexFont}
-                      text={vertex.label}
-                      x={vertex.labelX}
-                      y={vertex.labelBaseline}
-                    />
+                    {selected ? (
+                      <RoundedRect
+                        color={theme.colors.primarySurface}
+                        height={vertex.height + 12}
+                        r={12}
+                        width={vertex.width + 12}
+                        x={vertex.left - 6}
+                        y={vertex.top - 6}
+                      />
+                    ) : null}
+                    {bullet ? (
+                      <Circle
+                        color={canvasColour(
+                          vertex.vertex.labelColour,
+                          theme.mode === "dark",
+                          theme.colors.textPrimary,
+                        )}
+                        cx={vertex.center.x}
+                        cy={vertex.center.y}
+                        r={5.5}
+                      />
+                    ) : vertex.label.length > 0 ? (
+                      <SkiaText
+                        color={canvasColour(
+                          vertex.vertex.labelColour,
+                          theme.mode === "dark",
+                          theme.colors.textPrimary,
+                        )}
+                        font={vertexFont}
+                        text={vertex.label}
+                        x={vertex.labelX}
+                        y={vertex.labelBaseline}
+                      />
+                    ) : (
+                      <Circle
+                        color={theme.colors.textSecondary}
+                        cx={vertex.center.x}
+                        cy={vertex.center.y}
+                        r={8}
+                        strokeWidth={1.5}
+                        style="stroke"
+                      />
+                    )}
+                    {selected ? (
+                      <RoundedRect
+                        color={theme.colors.selection}
+                        height={vertex.height + 12}
+                        r={12}
+                        strokeWidth={2.4}
+                        style="stroke"
+                        width={vertex.width + 12}
+                        x={vertex.left - 6}
+                        y={vertex.top - 6}
+                      />
+                    ) : null}
                   </Group>
                 );
               })}

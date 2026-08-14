@@ -11,9 +11,9 @@ export const DOCUMENT_GRID_SIZE = 96;
 export const MIN_VIEWPORT_SCALE = 0.18;
 export const MAX_VIEWPORT_SCALE = 4;
 
-const VERTEX_MIN_WIDTH = 44;
-const VERTEX_HEIGHT = 42;
-const VERTEX_HORIZONTAL_PADDING = 22;
+const VERTEX_MIN_WIDTH = 28;
+const VERTEX_HEIGHT = 34;
+const VERTEX_HORIZONTAL_PADDING = 18;
 const MAX_VERTEX_LABEL_CHARACTERS = 30;
 const MAX_EDGE_LABEL_CHARACTERS = 38;
 const EDGE_CURVE_UNIT = 13;
@@ -96,10 +96,18 @@ export function clamp(value: number, minimum: number, maximum: number): number {
   return Math.min(maximum, Math.max(minimum, value));
 }
 
-function compactLabel(label: string, maximumCharacters: number): string {
-  const characters = Array.from(label.trim());
-  if (characters.length === 0) {
+function displayLabel(label: string): string {
+  const trimmed = label.trim();
+  if (trimmed === "\\bullet" || trimmed === "bullet") {
     return "•";
+  }
+  return trimmed;
+}
+
+function compactLabel(label: string, maximumCharacters: number): string {
+  const characters = Array.from(displayLabel(label));
+  if (characters.length === 0) {
+    return "";
   }
   if (characters.length <= maximumCharacters) {
     return characters.join("");
@@ -245,17 +253,16 @@ function gridPaths(bounds: WorldBounds): {
   const minY = Math.floor((bounds.minY - padding) / stride) * stride;
   const maxY = Math.ceil((bounds.maxY + padding) / stride) * stride;
   const grid: string[] = [];
-  const axes: string[] = [];
 
   for (let x = minX; x <= maxX + stride / 2; x += stride) {
     const segment = `M ${svgNumber(x)} ${svgNumber(minY)} L ${svgNumber(x)} ${svgNumber(maxY)}`;
-    (Math.abs(x) < 1e-6 ? axes : grid).push(segment);
+    grid.push(segment);
   }
   for (let y = minY; y <= maxY + stride / 2; y += stride) {
     const segment = `M ${svgNumber(minX)} ${svgNumber(y)} L ${svgNumber(maxX)} ${svgNumber(y)}`;
-    (Math.abs(y) < 1e-6 ? axes : grid).push(segment);
+    grid.push(segment);
   }
-  return { gridPath: grid.join(" "), axisPath: axes.join(" ") };
+  return { gridPath: grid.join(" "), axisPath: "" };
 }
 
 function edgeLevel(
@@ -401,16 +408,25 @@ export function buildDiagramGeometry(
       continue;
     }
     const label = compactLabel(vertex.label, MAX_VERTEX_LABEL_CHARACTERS);
-    const width = Math.max(VERTEX_MIN_WIDTH, measureVertexLabel(label) + VERTEX_HORIZONTAL_PADDING);
-    const center = point(preview.x * DOCUMENT_GRID_SIZE, preview.y * DOCUMENT_GRID_SIZE);
+    const pointObject = label === "•";
+    const width = pointObject
+      ? 18
+      : Math.max(
+          VERTEX_MIN_WIDTH,
+          measureVertexLabel(label) + VERTEX_HORIZONTAL_PADDING,
+        );
+    const height = pointObject ? 18 : VERTEX_HEIGHT;
+    // Quiver coordinates name cells. Objects live at the centre of those cells;
+    // integer multiples of the grid size are the cell boundaries/corners.
+    const center = documentPointToWorldCenter(preview);
     const geometry: VertexGeometry = {
       id: vertex.id,
       vertex,
       center,
       left: center.x - width / 2,
-      top: center.y - VERTEX_HEIGHT / 2,
+      top: center.y - height / 2,
       width,
-      height: VERTEX_HEIGHT,
+      height,
       label,
       labelX: center.x - measureVertexLabel(label) / 2,
       labelBaseline: center.y + 6,
@@ -532,8 +548,58 @@ export function screenToDocumentPoint(
 ): GridPoint {
   const safeScale = Number.isFinite(scale) && scale > 1e-6 ? scale : 1;
   return {
-    x: finite((screen.x - finite(translateX)) / safeScale / DOCUMENT_GRID_SIZE),
-    y: finite((screen.y - finite(translateY)) / safeScale / DOCUMENT_GRID_SIZE),
+    x:
+      finite((screen.x - finite(translateX)) / safeScale / DOCUMENT_GRID_SIZE) -
+      0.5,
+    y:
+      finite((screen.y - finite(translateY)) / safeScale / DOCUMENT_GRID_SIZE) -
+      0.5,
+  };
+}
+
+export function screenToWorldPoint(
+  screen: WorldPoint,
+  translateX: number,
+  translateY: number,
+  scale: number,
+): WorldPoint {
+  const safeScale = Number.isFinite(scale) && scale > 1e-6 ? scale : 1;
+  return point(
+    (screen.x - finite(translateX)) / safeScale,
+    (screen.y - finite(translateY)) / safeScale,
+  );
+}
+
+export function documentPointToWorldCenter(value: GridPoint): WorldPoint {
+  return point(
+    (finite(value.x) + 0.5) * DOCUMENT_GRID_SIZE,
+    (finite(value.y) + 0.5) * DOCUMENT_GRID_SIZE,
+  );
+}
+
+export function connectionPreviewPath(
+  sourceCenter: WorldPoint,
+  sourceHalfWidth: number,
+  sourceHalfHeight: number,
+  pointer: WorldPoint,
+): Readonly<{ path: string; arrowhead: string }> | null {
+  const delta = subtract(pointer, sourceCenter);
+  if (magnitude(delta) < 8) {
+    return null;
+  }
+  const direction = normalized(delta);
+  const source: EndpointGeometry = {
+    point: sourceCenter,
+    halfWidth: Math.max(0, finite(sourceHalfWidth)),
+    halfHeight: Math.max(0, finite(sourceHalfHeight)),
+  };
+  const start = add(
+    sourceCenter,
+    multiply(direction, endpointDistance(source, direction)),
+  );
+  return {
+    path: `M ${svgNumber(start.x)} ${svgNumber(start.y)} L ${svgNumber(pointer.x)} ${svgNumber(pointer.y)}`,
+    arrowhead: arrowheadPath(pointer, delta),
   };
 }
 

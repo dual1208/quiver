@@ -71,6 +71,26 @@ function entityInDocument(
   );
 }
 
+function vertexAt(
+  document: DiagramDocument,
+  point: GridPoint,
+): Vertex | undefined {
+  return document.vertices.find(
+    (vertex) => vertex.x === point.x && vertex.y === point.y,
+  );
+}
+
+function newVertex(id: EntityId, point: GridPoint): Vertex {
+  return {
+    kind: "vertex",
+    id,
+    x: point.x,
+    y: point.y,
+    label: "\\bullet",
+    labelColour: BLACK_HSLA,
+  };
+}
+
 export type DiagramEditor = Readonly<{
   document: DiagramDocument;
   selectedIds: readonly EntityId[];
@@ -81,6 +101,8 @@ export type DiagramEditor = Readonly<{
   toggleSelection: (id: EntityId) => void;
   clearSelection: () => void;
   createVertex: (point: GridPoint) => EntityId;
+  beginConnection: (point: GridPoint) => EntityId;
+  completeConnection: (sourceId: EntityId, point: GridPoint) => EntityId | null;
   moveVertex: (id: EntityId, point: GridPoint) => void;
   connectSelection: () => EntityId | null;
   updateEntityLabel: (id: EntityId, label: string) => void;
@@ -140,17 +162,72 @@ export function useDiagramEditor(initialDocument: DiagramDocument): DiagramEdito
       const document = historyRef.current.document;
       const point = freePoint(document, requested);
       const id = nextEntityId("vertex");
-      const vertex: Vertex = {
-        kind: "vertex",
-        id,
-        x: point.x,
-        y: point.y,
-        label: "Object",
-        labelColour: BLACK_HSLA,
-      };
+      const vertex = newVertex(id, point);
       commit([{ type: "add-entities", vertices: [vertex], edges: [] }]);
       setSelectedIds([id]);
       return id;
+    },
+    [commit],
+  );
+
+  const beginConnection = useCallback(
+    (requested: GridPoint): EntityId => {
+      const document = historyRef.current.document;
+      const point = snappedPoint(requested);
+      const existing = vertexAt(document, point);
+      if (existing !== undefined) {
+        setSelectedIds([existing.id]);
+        return existing.id;
+      }
+
+      const id = nextEntityId("vertex");
+      commit([
+        {
+          type: "add-entities",
+          vertices: [newVertex(id, point)],
+          edges: [],
+        },
+      ]);
+      setSelectedIds([id]);
+      return id;
+    },
+    [commit],
+  );
+
+  const completeConnection = useCallback(
+    (sourceId: EntityId, requested: GridPoint): EntityId | null => {
+      const document = historyRef.current.document;
+      const source = document.vertices.find((vertex) => vertex.id === sourceId);
+      if (source === undefined) {
+        return null;
+      }
+
+      const point = snappedPoint(requested);
+      const existingTarget = vertexAt(document, point);
+      const targetId = existingTarget?.id ?? nextEntityId("vertex");
+      const edgeId = nextEntityId("edge");
+      const edge: Edge = {
+        kind: "edge",
+        id: edgeId,
+        sourceId,
+        targetId,
+        label: "",
+        labelColour: BLACK_HSLA,
+        options: {
+          ...DEFAULT_EDGE_OPTIONS,
+          shape: sourceId === targetId ? "arc" : "bezier",
+        },
+      };
+      commit([
+        {
+          type: "add-entities",
+          vertices:
+            existingTarget === undefined ? [newVertex(targetId, point)] : [],
+          edges: [edge],
+        },
+      ]);
+      setSelectedIds([edgeId]);
+      return edgeId;
     },
     [commit],
   );
@@ -293,6 +370,8 @@ export function useDiagramEditor(initialDocument: DiagramDocument): DiagramEdito
     toggleSelection,
     clearSelection,
     createVertex,
+    beginConnection,
+    completeConnection,
     moveVertex,
     connectSelection,
     updateEntityLabel,

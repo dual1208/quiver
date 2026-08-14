@@ -14,7 +14,10 @@
 - A paired-but-offline target is a failed/blocked matrix entry; no simulator, emulator, or alternate device is substituted.
 - Lab jobs are serialized by both GitHub concurrency and a local non-blocking filesystem lock.
 - Pull requests from forks never execute on the self-hosted runner.
-- Runner registration tokens, Apple credentials, team/profile values, and device-local data are never printed, committed, or included in artifacts.
+- Runner registration tokens, Apple credentials, profile metadata, full hardware UDIDs, and device-local
+  data are never printed, committed, or included in uploaded artifacts. Signed `.app` bundles and raw
+  `.xcresult` files necessarily contain a profile or destination identifier; retain them only in a
+  mode-0700 local run directory and upload allowlisted sanitized summaries/attachments instead.
 - Every device result records commit, app version, bundle ID, model, OS, identifier, build hash, start/end time, and pass/fail stage.
 - Final installation is a signed standalone development/release-like build that launches without Metro.
 - Scripts are idempotent and preserve successful artifacts; retries are explicit and bounded.
@@ -231,13 +234,21 @@ git commit -m "build(lab): verify Android physical devices"
 - [ ] **Step 1: Write failing signing/destination/guard tests**
 
 Assert build verifies exactly one valid Apple Development identity containing team `HPNQ87SHMK` without
-logging identity text and uses `generic/platform=iOS` for the shared app build. Extend inventory parsing to
-retain each CoreDevice record's `hardwareProperties.udid`, `reality`, developer-mode state, DDI availability,
-lock state, pairing, and tunnel connection. Every device action must first require the exact configured
-alias/platform/CoreDevice UUID/model, physical reality, connected tunnel, pairing, unlocked state, enabled
-developer mode, and available DDI services. Use the CoreDevice UUID only for `devicectl`; use the same
-guarded record's hardware UDID only for physical `xcodebuild -destination`, redact it from logs, and never
-substitute a simulator or another physical device.
+logging identity/profile text and uses `generic/platform=iOS` for the final shared app build. Extend
+inventory parsing to retain each CoreDevice record's `hardwareProperties.udid`, `reality`, boot/pairing and
+tunnel state, developer-mode state, and `ddiServicesAvailable`; list inventory does not contain lock state.
+Keep the hardware UDID in a `repr=False` field and register it for command redaction immediately.
+
+Choose a capability-based exact-target guard because Xcode 26.6's list-record tunnel/DDI values can remain
+stale while direct device operations succeed. Before any mutation, require the configured
+alias/platform/CoreDevice UUID/model, physical reality, booted and paired state, and enabled Developer
+Mode. Then query `device info lockState` and `device info ddiServices --no-auto-mount-ddis`, requiring valid
+version-3 success envelopes, `passcodeRequired == false`, `unlockedSinceBoot == true`, and usable compatible
+DDI services. Finally require a harmless bundle-filtered `device info apps` capability probe. Only after
+these checks may code mount a DDI or mutate the device. Fixture stale disconnected/unavailable list flags
+with successful and failed direct probes. Use the CoreDevice UUID only for `devicectl`; use the same guarded
+record's hardware UDID only for physical `xcodebuild -destination 'platform=iOS,id=HARDWARE_UDID'` with a
+bounded destination timeout. Never substitute a simulator or another physical device.
 
 - [ ] **Step 2: Implement clean prebuild and signed standalone app build**
 
@@ -258,15 +269,21 @@ xcodebuild -workspace apps/mobile/ios/Quiver.xcworkspace -scheme Quiver \
 Require exactly one top-level `Quiver.xcworkspace`, then require workspace name `Quiver` and scheme
 `Quiver` from `xcodebuild -workspace ... -list -json`; extra Pod schemes are allowed. Resolve the built app
 from `xcodebuild -showBuildSettings -json` using `TARGET_BUILD_DIR` plus `WRAPPER_NAME`, never a guessed
-path. A generic shared build is accepted only if its decoded development profile already contains both
-configured physical hardware UDIDs; provisioning registration cannot be deferred to a generic destination.
+path. A generic shared build is accepted only if its decoded development profile contains both configured
+physical hardware UDIDs. If either is absent, perform bounded disposable automatic-signing builds against
+each already-guarded exact physical destination to register/refresh provisioning, then produce one new
+final generic build and revalidate that its profile covers both. Never install those intermediate apps or
+claim them as the shared artifact.
 
 Verify the `.app` with `codesign --verify --deep --strict`. Decode entitlements and
 `embedded.mobileprovision` only in mode-0600 temporary files; validate identifier/team relationships,
-expiry, `get-task-allow`, and target-device coverage, but retain no raw entitlements, certificate data,
-profile UUID/name, or UDID. Hash the final signed bundle from sorted relative paths plus entry type,
-executable mode, symlink target, size, and file bytes, including `_CodeSignature` and the profile. The hash
-proves one artifact reused across devices; it is not claimed reproducible across separately signed builds.
+expiry, `get-task-allow`, and target-device coverage, but retain no parsed raw entitlements, certificate
+data, profile UUID/name, or UDID outside the protected local run. Subprocess support must provide a
+suppressed-output/allowlisted-summary mode for `security`, profile, and signing commands; ordinary string
+redaction is insufficient for secrets discovered only in output. Hash the final signed bundle from sorted
+relative paths plus entry type, executable mode, symlink target, size, and file bytes, including
+`_CodeSignature` and the profile. The hash proves one artifact reused across devices; it is not claimed
+reproducible across separately signed builds.
 
 - [ ] **Step 3: Implement CoreDevice installation and launch**
 
@@ -275,10 +292,11 @@ then separately verify the installed version with `devicectl device info apps --
 --include-all-apps --bundle-id app.quiver.native --json-output apps.json`. Launch with
 `devicectl device process launch --terminate-existing --activate --device CORE_UUID --quiet --timeout 30
 --json-output launch.json app.quiver.native`; the bundle identifier must be the final argument so later
-options cannot become app arguments. Parse the Xcode 26 version-3 envelope, requiring successful
-`info.outcome`/expected `info.commandType` and object `result`; app queries use `result.apps` and process
-queries use `result.runningProcesses`. Treat raw JSON as secure temporary input and retain only allowlisted,
-redacted summaries. Save bounded console/system logs; do not attach an interactive debugger.
+options cannot become app arguments. Parse the Xcode 26 version-3 envelope, requiring
+`info.jsonVersion == 3`, successful `info.outcome`/the exact expected `info.commandType`, and object
+`result`; do not confuse JSON version with the separate tool `info.version`. App queries use `result.apps`
+and process queries use `result.runningProcesses`. Treat raw JSON as secure temporary input and retain only
+allowlisted, redacted summaries. Save bounded console/system logs; do not attach an interactive debugger.
 
 - [ ] **Step 4: Define the standalone physical XCUITest bundle**
 
@@ -302,13 +320,17 @@ XCTAssertTrue(app.otherElements["library-screen"].waitForExistence(timeout: 15))
 
 - [ ] **Step 5: Build/run UI tests on each exact physical destination**
 
-Generate with `xcodegen generate --spec device-tests/ios/project.yml`, then run the generated project with
-the guarded hardware destination, unique derived/result paths, automatic signing overrides,
+Generate into the protected run-owned artifact directory with
+`xcodegen generate --spec device-tests/ios/project.yml --project RUN/device-tests-ios`; never generate an
+unignored project beside the committed spec. Then run the generated project with the guarded hardware
+destination, unique derived/result paths, automatic signing overrides,
 `-parallel-testing-enabled NO`, bounded test timeouts, and `-only-testing:QuiverSmokeTests`. Parse
-`xcresulttool get test-results summary`, requiring `result == "Passed"`, zero failures, at least one passed
-test, and the expected guarded physical destination; fixture the actual Xcode 26.6 array-shaped
-`devicesAndConfigurations`/`testFailures` output. Export attachments with `xcresulttool export attachments`
-and bounded console logs with `xcresulttool get log --type console`.
+`xcresulttool get test-results summary --path RESULT.xcresult`, requiring `result == "Passed"`, zero
+failures, at least one passed test, and the expected guarded physical destination; fixture the actual Xcode
+26.6 array-shaped `devicesAndConfigurations`/`testFailures` output. Export with
+`xcresulttool export attachments --path RESULT.xcresult --output-path DIR` and capture bounded console logs
+with `xcresulttool get log --path RESULT.xcresult --type console`. Keep the raw `.xcresult` local and upload
+only scrubbed summaries plus reviewed screenshots.
 
 - [ ] **Step 6: Verify reachable iPad and commit**
 
